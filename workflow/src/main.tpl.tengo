@@ -1,14 +1,26 @@
 // Repertoire Score — workflow (Phase 0 skeleton).
 //
-// Consumes the selected clonotype dataset anchor. The composite score computation
-// (percentile-normalised linear combination of the discovered signal columns) lands
-// in a later phase, pending the composite-form decision (spec Q-0001 / PLAN §5.1).
-// For now this is a valid no-op body so the block builds, runs, and can be wired
-// end to end; feature/tier detection meanwhile lives reactively in the model.
+// Consumes the selected clonotype dataset anchor + preset family. The composite score
+// computation (percentile-normalised linear combination of the discovered signal columns)
+// lands in a later phase, pending the composite-form decision (spec Q-0001 / A-0016, PLAN §5.1).
+// For now this is a valid no-op body so the block builds, runs, and can be wired end to end;
+// feature/tier detection meanwhile lives reactively in the model.
+//
+// Phase 1 output contract (spec A-0023) — the exported score PColumn:
+//   name        : pl7.app/vdj/repertoireScore                          (single canonical name)
+//   axis        : input clonotypeKey (bulk) / scClonotypeKey (SC), passed through unchanged
+//   value range : [0, 1]
+//   domain      : pl7.app/vdj/chain (bulk) | pl7.app/vdj/receptor (SC), mirroring the input;
+//                 pl7.app/vdj/repertoireScore/preset = the applied preset id (always)
+//   annotations : pl7.app/isScore="true", pl7.app/score/defaultCutoff, pl7.app/label,
+//                 pl7.app/description; + injected trace (type milaboratories.repertoire-score)
+//   per-clone   : one value per clonotype — NOT per chain (no scClonotypeChain domain).
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 
 wf.body(func(args) {
-	// args.inputAnchor — PlRef to the clonotype dataset. Unused until score emission lands.
+	// args.inputAnchor — PlRef to the clonotype dataset.
+	// args.presetFamily — "standard" | "antigen-selected".
+	// Both unused until score emission lands (Phase 1).
 
 	return {
 		outputs: {},
