@@ -1,0 +1,114 @@
+// Composite repertoire score — the pure-pt (Polars) computation (spec A-0027).
+//
+// One score per clonotype, computed over a single global window (the whole input).
+// The recipe: median-impute each feature, percentile-rank it, take the coefficient-
+// weighted sum of the ranks, then re-rank that composite and normalise to (0, 1].
+// The final re-rank is what pins the output to [0, 1] regardless of the (signed)
+// coefficient magnitudes — so signed antigen-selected coefficients need no clamping.
+//
+// The compute runs inline as a pt workflow (the verified pframe<->pt bridge from
+// clonotype-browser/annotations-stats.lib.tengo and lead-selection/utils.lib.tengo):
+// the input frame is built directly from PColumns, and the score PColumn is read back
+// via pFrameToColumnsMap. Kept in its own file so the pt recipe is isolated from the
+// discovery/classification logic in main.tpl.tengo.
+
+ll := import("@platforma-sdk/workflow-tengo:ll")
+pt := import("@platforma-sdk/workflow-tengo:pt")
+pUtil := import("@platforma-sdk/workflow-tengo:pframes.util")
+
+// The constant single-group column that turns every window op into a whole-input
+// aggregate.
+GRP := "__grp"
+
+/**
+ * Computes the composite score for a set of per-clonotype feature columns.
+ *
+ * @param inputCols - array of feature descriptors, each:
+ *   { header: string, spec: object, data: object, transform: string, coef: number }
+ *   - header    : unique in-frame column name for this feature contribution.
+ *   - spec/data : the source PColumn (keyed on the clonotype-key axis).
+ *   - transform : "identity" | "log1p" | "faststar" — the raw->analysis mapping.
+ *   - coef      : signed coefficient applied to this feature's percentile rank
+ *                 (already scaled by 0.20 for light-chain siblings).
+ * @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
+ * @param scoreSpec   - the output score PColumn spec (A-0023), sans axesSpec.
+ * @return the score PColumn { spec, data }.
+ */
+computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
+	ll.assert(len(inputCols) > 0, "computeScore: no feature columns to score")
+
+	ptWf := pt.workflow().cpu(1).mem("4GiB")
+
+	// Build the joined input frame directly from the PColumns — a full join on the
+	// shared clonotype-key axis gives one row per clonotype with every feature.
+	entries := []
+	for c in inputCols {
+		entries = append(entries, pt.p.column(c.header, { spec: c.spec, data: c.data }))
+	}
+
+	// Project the clonotype key as a named column, plus each feature with its
+	// raw->analysis transform folded in.
+	selectExprs := [pt.sc.axis(keyAxisSpec).alias("clonotypeKey")]
+	for c in inputCols {
+		e := pt.col(c.header)
+		if c.transform == "log1p" {
+			// Abundance (e.g. unique cell count) is compressed by log1p.
+			e = pt.col(c.header).plus(pt.lit(1)).log()
+		} else if c.transform == "faststar" {
+			// Convergence "fastStar" is a String hit flag — cast to 1/0.
+			e = pt.when(pt.col(c.header).eq("Hit")).then(pt.lit(1)).otherwise(pt.lit(0))
+		}
+		selectExprs = append(selectExprs, e.alias(c.header))
+	}
+	df := ptWf.frame(pt.p.full(entries...)).select(selectExprs...)
+
+	// Single global group for every subsequent window op.
+	df = df.withColumns(pt.lit(1).alias(GRP))
+
+	// Median-impute each feature within the global window.
+	imputeExprs := []
+	for c in inputCols {
+		imputeExprs = append(imputeExprs,
+			pt.col(c.header).fillNull(pt.col(c.header).median().over(GRP)).alias(c.header))
+	}
+	df = df.withColumns(imputeExprs...)
+
+	// Percentile-rank each feature — materialise before any arithmetic uses them.
+	rankExprs := []
+	for c in inputCols {
+		rankExprs = append(rankExprs,
+			pt.rank(pt.col(c.header)).over(GRP).alias("__r_" + c.header))
+	}
+	df = df.withColumns(rankExprs...)
+
+	// Coefficient-weighted sum of the materialised rank columns.
+	zExpr := undefined
+	for c in inputCols {
+		term := pt.col("__r_" + c.header).multiply(pt.lit(c.coef))
+		if is_undefined(zExpr) {
+			zExpr = term
+		} else {
+			zExpr = zExpr.plus(term)
+		}
+	}
+	df = df.withColumns(zExpr.alias("__z"))
+
+	// Re-rank the composite and normalise to (0, 1] via rank / group size.
+	df = df.withColumns(
+		pt.rank(pt.col("__z")).over(GRP).alias("__zr"),
+		pt.col(GRP).count().over(GRP).alias("__n"))
+	df = df.withColumns(pt.col("__zr").truediv(pt.col("__n")).alias("score"))
+
+	df.saveFrameDirect("scoreFrame", {
+		axes: [{ column: "clonotypeKey", spec: keyAxisSpec }],
+		columns: [{ column: "score", spec: scoreSpec }],
+		partitionKeyLength: 0
+	})
+
+	cols := pUtil.pFrameToColumnsMap(ptWf.run().getFrameDirect("scoreFrame"))
+	return cols["score"]
+}
+
+export ll.toStrict({
+	computeScore: computeScore
+})

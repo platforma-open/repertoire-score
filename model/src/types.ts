@@ -52,6 +52,10 @@ export type BlockArgs = {
   tier?: SelectableTier;
   weightMode: WeightMode;
   customWeights?: Partial<Record<FeatureKey, number>>;
+  // Calibrated preset coefficients for the selected family, keyed by tier. The workflow
+  // resolves the effective tier from the columns it discovers, then indexes this map — so
+  // the coefficients travel with args rather than being duplicated in Tengo.
+  coefficients: Record<SelectableTier, Partial<Record<FeatureKey, number>>>;
 };
 
 /**

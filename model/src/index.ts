@@ -8,6 +8,7 @@ import type {
   SelectableTier,
   SignalKind,
 } from "./types";
+import { PRESET_COEFFICIENTS } from "./presets";
 
 export * from "./types";
 export * from "./presets";
@@ -152,6 +153,9 @@ export const platforma = BlockModelV3.create(dataModel)
       tier: data.tierMode === "custom" ? data.tier : undefined,
       weightMode: customWeights ? "custom" : "preset",
       customWeights,
+      // Ship the calibrated coefficients for the chosen family; the workflow picks the
+      // tier row once it knows which signals the input actually carries.
+      coefficients: PRESET_COEFFICIENTS[data.presetFamily],
     };
   })
 
