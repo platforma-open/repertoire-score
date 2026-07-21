@@ -1,0 +1,17 @@
+// Repertoire Score — workflow (Phase 0 skeleton).
+//
+// Consumes the selected clonotype dataset anchor. The composite score computation
+// (percentile-normalised linear combination of the discovered signal columns) lands
+// in a later phase, pending the composite-form decision (spec Q-0001 / PLAN §5.1).
+// For now this is a valid no-op body so the block builds, runs, and can be wired
+// end to end; feature/tier detection meanwhile lives reactively in the model.
+wf := import("@platforma-sdk/workflow-tengo:workflow")
+
+wf.body(func(args) {
+	// args.inputAnchor — PlRef to the clonotype dataset. Unused until score emission lands.
+
+	return {
+		outputs: {},
+		exports: {}
+	}
+})
