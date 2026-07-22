@@ -46,10 +46,24 @@ const scoreError = computed(() => {
 const tableSettings = usePlDataTableSettingsV2({
   model: () => app.model.outputs.scoreTable,
 });
+
+// Editable block label (PlBlockPage subtitle). Surfaced in the left panel via the model's
+// `.subtitle()`. Coerce undefined → "" so the subtitle row renders (and its placeholder shows)
+// on block instances created before this field existed.
+const customBlockLabel = computed({
+  get: () => app.model.data.customBlockLabel ?? "",
+  set: (v: string) => {
+    app.model.data.customBlockLabel = v;
+  },
+});
 </script>
 
 <template>
-  <PlBlockPage title="Repertoire Score">
+  <PlBlockPage
+    v-model:subtitle="customBlockLabel"
+    :subtitle-placeholder="app.model.data.defaultBlockLabel ?? ''"
+    title="Repertoire Score"
+  >
     <template #append>
       <PlBtnGhost @click.stop="() => setPanel('settings')">
         Settings

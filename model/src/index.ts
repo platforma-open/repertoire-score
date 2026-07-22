@@ -14,7 +14,6 @@ import {
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
-  plRefsEqual,
 } from "@platforma-sdk/model";
 import type {
   BlockArgs,
@@ -53,10 +52,12 @@ const inputAnchorSpecs = [
 // otherwise the UI advertises a signal the workflow can't use (or vice-versa).
 //
 // MiXCR SHM mutation features — the current in-vivo score's set, isScore upstream.
+// The nucleotide-mutations signal column — also the default scatterplot Y axis.
+export const NT_MUTATIONS_COLUMN = "pl7.app/vdj/sequence/nMutations";
 const MUTATION_COLUMN_NAMES = new Set([
   "pl7.app/vdj/sequence/nAAMutationsCDR",
   "pl7.app/vdj/sequence/nAAMutationsFWR",
-  "pl7.app/vdj/sequence/nMutations",
+  NT_MUTATIONS_COLUMN,
   "pl7.app/vdj/sequence/fractionCDRMutations",
 ]);
 // Generation probability: the score consumes -log10(Pgen). The raw `generationProbability`
@@ -173,7 +174,7 @@ function canonicalWeights(
 
 /** Default state for the Distributions histogram: binned counts, solid bars. */
 export const defaultGraphStateHistogram = (): GraphMakerState => ({
-  title: "Repertoire score distribution",
+  title: "Score & variable distributions",
   template: "bins",
   currentTab: null,
   axesSettings: {
@@ -184,14 +185,20 @@ export const defaultGraphStateHistogram = (): GraphMakerState => ({
   },
 });
 
-/** Default state for the Comparison scatterplot (one signal vs another). */
+/** Default state for the Comparison scatterplot (one signal vs another). Trend line on by
+ *  default so the score-vs-signal relationship is visible at first open. */
 export const defaultGraphStateScatter = (): GraphMakerState => ({
-  title: "Score comparison",
+  title: "Score & variable relationships",
   template: "dots",
   currentTab: null,
+  statisticsSettings: {
+    trend: { on: true },
+  },
 });
 
 const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
+  customBlockLabel: "",
+  defaultBlockLabel: "",
   presetFamily: "standard",
   tierMode: "default",
   weightMode: "default",
@@ -305,20 +312,10 @@ export const platforma = BlockModelV3.create(dataModel)
   // enrichments (e.g. lead selection) auto-discover the score.
   .enriches((args) => (args.inputAnchor ? [args.inputAnchor] : []))
 
-  .title((ctx) => {
-    try {
-      const ref = ctx.data.inputAnchor;
-      if (ref) {
-        const label = ctx.resultPool
-          .getOptions(inputAnchorSpecs, { refsWithEnrichments: true })
-          .find((o) => plRefsEqual(o.ref, ref))?.label;
-        if (label) return `Repertoire Score - ${label}`;
-      }
-    } catch {
-      // render context may not be fully initialized yet
-    }
-    return "Repertoire Score";
-  })
+  .title(() => "Repertoire Score")
+
+  // Block label in the left panel: the user's custom label, else the auto default.
+  .subtitle((ctx) => ctx.data.customBlockLabel || ctx.data.defaultBlockLabel || "")
 
   .sections(() => [
     { type: "link" as const, href: "/" as const, label: "Main" },

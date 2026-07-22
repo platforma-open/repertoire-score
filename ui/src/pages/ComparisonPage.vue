@@ -4,6 +4,7 @@ import { GraphMaker } from "@milaboratories/graph-maker";
 import {
   defaultGraphStateScatter,
   isPlottableColumn,
+  NT_MUTATIONS_COLUMN,
   REPERTOIRE_SCORE_COLUMN,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import { PlBlockPage } from "@platforma-sdk/ui-vue";
@@ -25,18 +26,20 @@ const graphState = computed({
   },
 });
 
-// Default X = the composite score, Y = the first available feature — a ready-to-read plot the
-// user can then re-bind to any pair of signals.
+// Default X = the composite score, Y = Nt mutations (falling back to the first available signal
+// if that column isn't present) — a ready-to-read plot the user can re-bind to any pair.
 const defaultOptions = computed((): PredefinedGraphOption<"scatterplot">[] | undefined => {
   const pcols = app.model.outputs.histogramPfPcols;
   if (!pcols) return undefined;
   const scoreCol = pcols.find((p) => p.spec.name === REPERTOIRE_SCORE_COLUMN);
+  const ntCol = pcols.find((p) => p.spec.name === NT_MUTATIONS_COLUMN);
   const firstFeature = pcols.find((p) => p.spec.name !== REPERTOIRE_SCORE_COLUMN);
+  const yCol = ntCol ?? firstFeature;
   if (!scoreCol) return undefined;
   const opts: PredefinedGraphOption<"scatterplot">[] = [
     { inputName: "x", selectedSource: scoreCol.spec },
   ];
-  if (firstFeature) opts.push({ inputName: "y", selectedSource: firstFeature.spec });
+  if (yCol) opts.push({ inputName: "y", selectedSource: yCol.spec });
   return opts;
 });
 </script>

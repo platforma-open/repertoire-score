@@ -21,6 +21,10 @@ export type WeightMode = "default" | "custom";
 /** Unified block data (UI-editable state). */
 export type BlockData = {
   inputAnchor?: PlRef;
+  // User-editable block label.
+  customBlockLabel?: string;
+  // Auto-generated default label.
+  defaultBlockLabel?: string;
   presetFamily: PresetFamily;
   // Scoring-signals control:
   //   "default" — highest reachable tier; auto-upgrades as upstream signals appear.

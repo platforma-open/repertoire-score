@@ -3,13 +3,12 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
-  SignalKind,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   defaultFeatureWeights,
   FEATURE_ORDER,
-  FEATURE_SIGNAL,
 } from "@platforma-open/milaboratories.repertoire-score.model";
+import { plRefsEqual } from "@platforma-sdk/model";
 import {
   PlAlert,
   PlBtnGhost,
@@ -17,11 +16,10 @@ import {
   PlDropdown,
   PlDropdownRef,
   PlMaskIcon24,
-  PlNumberField,
-  PlRow,
   PlSectionSeparator,
+  PlTooltip,
 } from "@platforma-sdk/ui-vue";
-import { computed } from "vue";
+import { computed, watchEffect } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -123,6 +121,21 @@ const resolvedTier = computed<SelectableTier | undefined>(() => {
   return a.tier;
 });
 
+// Keep the auto block-label default in sync: "<dataset> · <scoring formula variables>". Stored
+// in `data.defaultBlockLabel` (a plain data field the model's `.subtitle()` can read — the result
+// pool isn't available in that render pass) and shown as the grey placeholder in the label field.
+// `customBlockLabel` (the user's own label) stays empty until they type, so the default renders
+// grey, not as a black stored value — matching the enrichment block.
+watchEffect(() => {
+  const ref = app.model.data.inputAnchor;
+  const dataset = ref
+    ? ((app.model.outputs.inputOptions ?? []).find((o) => plRefsEqual(o.ref, ref))?.label ?? "")
+    : "";
+  const tier = resolvedTier.value;
+  app.model.data.defaultBlockLabel =
+    dataset && tier ? `${dataset} · ${TIER_LABELS[tier]}` : dataset;
+});
+
 // Preset default coefficients for the resolved (family, tier).
 const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
   resolvedTier.value ? defaultFeatureWeights(app.model.data.presetFamily, resolvedTier.value) : {},
@@ -132,31 +145,6 @@ const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
 const presetFeatures = computed<FeatureKey[]>(() =>
   FEATURE_ORDER.filter((f) => f in weightDefaults.value),
 );
-
-// Weight-editor rows: mutations together, abundance on its own, generation probability +
-// convergence sharing a row. Features stay in formula order (FEATURE_ORDER) and empty groups
-// (signals absent for the resolved tier) are dropped. A group of up to 3 features stays on one
-// row; a larger group (the Antigen-selected mutations set has 4) is split into rows of 2 so a
-// row never gets cramped.
-const WEIGHT_ROWS: SignalKind[][] = [["mutations"], ["abundance"], ["pgen", "convergence"]];
-const featureRows = computed<FeatureKey[][]>(() => {
-  const rows: FeatureKey[][] = [];
-  for (const signals of WEIGHT_ROWS) {
-    const group = presetFeatures.value.filter((f) => signals.includes(FEATURE_SIGNAL[f]));
-    if (group.length === 0) continue;
-    if (group.length <= 3) {
-      rows.push(group);
-    } else {
-      for (let i = 0; i < group.length; i += 2) rows.push(group.slice(i, i + 2));
-    }
-  }
-  return rows;
-});
-
-// Displayed value: the user's edit if present, else the preset default.
-function weightValue(feature: FeatureKey): number {
-  return app.model.data.customWeights?.[feature] ?? weightDefaults.value[feature] ?? 0;
-}
 
 function setWeight(feature: FeatureKey, v: number | undefined) {
   if (v === undefined || Number.isNaN(v)) return;
@@ -168,33 +156,43 @@ function resetWeights() {
   app.model.data.customWeights = {};
 }
 
-// Read-only preview of the composite the workflow will apply. The effective coefficient
-// per feature is mode-dependent: in "default" weight mode the workflow uses the preset
-// coefficients and ignores any stored customWeights (see model index.ts), so the preview
-// reads the preset defaults; in "custom" mode it reflects the edited weights. Rendered as
-// highlightable segments (coefficients emphasised), like peptide-extraction's pattern preview.
-type FormulaSegment = { text: string; coef?: boolean };
+// Whether the weights are being edited (vs. using the calibrated preset defaults).
+const isCustomWeights = computed(() => app.model.data.weightMode === "custom");
 
-function formatCoef(c: number): string {
-  return Number(Math.abs(c).toFixed(2)).toString();
+// The composite the workflow will apply, as an ordered list of weighted terms (formula order).
+// The effective coefficient per feature is mode-dependent: "default" uses the preset coefficients
+// (the model drops customWeights from args in that mode), "custom" uses the edited weights. In
+// "custom" every preset feature is kept so it can be edited even at 0; in "default" (read-only) a
+// feature that contributes nothing is dropped. Terms join with "+" — a negative coefficient
+// carries its own minus sign (signed input), so a term reads e.g. "+ -1.19 · Nt mutations".
+type FormulaTerm = { operator: string; feature: FeatureKey; value: number; label: string };
+
+const formulaTerms = computed<FormulaTerm[]>(() => {
+  if (!resolvedTier.value || presetFeatures.value.length === 0) return [];
+  const custom = isCustomWeights.value;
+  const feats = presetFeatures.value.filter((f) =>
+    custom ? true : Math.round(Math.abs(weightDefaults.value[f] ?? 0) * 100) !== 0,
+  );
+  return feats.map((f, i) => ({
+    operator: i === 0 ? "" : "+",
+    feature: f,
+    value: custom
+      ? (app.model.data.customWeights?.[f] ?? weightDefaults.value[f] ?? 0)
+      : (weightDefaults.value[f] ?? 0),
+    label: FEATURE_LABELS[f],
+  }));
+});
+
+// Coefficient shown with its sign, rounded to 2 dp (trailing zeros dropped): -1.1914 -> "-1.19".
+function formatSigned(v: number): string {
+  return Number(v.toFixed(2)).toString();
 }
 
-const formulaSegments = computed<FormulaSegment[]>(() => {
-  if (!resolvedTier.value || presetFeatures.value.length === 0) return [];
-  const custom = app.model.data.weightMode === "custom";
-  const terms: FormulaSegment[] = [];
-  for (const f of presetFeatures.value) {
-    const coef = custom
-      ? (app.model.data.customWeights?.[f] ?? weightDefaults.value[f] ?? 0)
-      : (weightDefaults.value[f] ?? 0);
-    if (Math.round(Math.abs(coef) * 100) === 0) continue; // rounds to 0 — no contribution
-    terms.push({ text: terms.length === 0 ? (coef < 0 ? "−" : "") : coef < 0 ? " − " : " + " });
-    terms.push({ text: formatCoef(coef), coef: true });
-    terms.push({ text: " · " + FEATURE_LABELS[f] });
-  }
-  if (terms.length === 0) return [];
-  return [{ text: "percentile( " }, ...terms, { text: " )" }];
-});
+// Commit an edited coefficient on change; ignore blank / non-numeric input.
+function onCoefInput(feature: FeatureKey, event: Event) {
+  const v = Number.parseFloat((event.target as HTMLInputElement).value);
+  setWeight(feature, Number.isNaN(v) ? undefined : Number(v.toFixed(2)));
+}
 </script>
 
 <template>
@@ -224,57 +222,10 @@ const formulaSegments = computed<FormulaSegment[]>(() => {
 
   <PlSectionSeparator>Score computation</PlSectionSeparator>
 
-  <div v-if="formulaSegments.length > 0">
-    <div :class="$style.formulaLabel">Scoring formula</div>
-    <div :class="$style.formulaPreview">
-      <span
-        v-for="(seg, i) in formulaSegments"
-        :key="i"
-        :class="seg.coef ? $style.coef : undefined"
-        >{{ seg.text }}</span
-      >
-    </div>
-  </div>
-
-  <PlBtnGroup v-model="app.model.data.weightMode" :options="weightModeOptions" label="Weights">
-    <template #tooltip>
-      How much each feature contributes to the final score.<br />
-      <b>Default</b> — calibrated preset defaults (recommended).<br />
-      <b>Custom</b> — set the weights yourself.
-    </template>
-  </PlBtnGroup>
-  <template v-if="app.model.data.weightMode === 'custom' && featureRows.length > 0">
-    <!-- Weight fields laid out row by row (see featureRows: signals grouped, groups larger
-          than 3 split into pairs). Fields in a row grow (flex-1) to fill the full width. -->
-    <div :class="$style.weightGroups">
-      <div v-for="(row, i) in featureRows" :key="i">
-        <PlRow>
-          <PlNumberField
-            v-for="f in row"
-            :key="f"
-            class="flex-1"
-            :model-value="weightValue(f)"
-            :label="FEATURE_LABELS[f]"
-            :step="0.1"
-            @update:model-value="(v) => setWeight(f, v)"
-          >
-            <template #tooltip>{{ FEATURE_TOOLTIPS[f] }}</template>
-          </PlNumberField>
-        </PlRow>
-      </div>
-    </div>
-    <PlBtnGhost :class="$style.resetBtn" @click.stop="resetWeights">
-      Reset to default
-      <template #append>
-        <PlMaskIcon24 name="reverse" />
-      </template>
-    </PlBtnGhost>
-  </template>
-
   <PlBtnGroup
     :model-value="app.model.data.tierMode"
     :options="tierModeOptions"
-    label="Scoring signals"
+    label="Scoring formula variables"
     @update:model-value="setTierMode"
   >
     <template #tooltip>
@@ -294,47 +245,120 @@ const formulaSegments = computed<FormulaSegment[]>(() => {
       options add more evidence when it is available upstream.
     </template>
   </PlDropdown>
+
+  <!-- Scoring formula. Read-only in Default weight mode; in Custom mode the coefficients become
+       inline editable inputs. Terms flow 1-2 per line (see .formulaTerms), leading operator per
+       term so a wrapped line starts with the + sign. -->
+  <PlBtnGroup
+    v-model="app.model.data.weightMode"
+    :options="weightModeOptions"
+    label="Scoring formula weights"
+  >
+    <template #tooltip>
+      How much each feature contributes to the final score.<br />
+      <b>Default</b> — calibrated preset defaults (recommended).<br />
+      <b>Custom</b> — edit the coefficients directly in the formula above.
+    </template>
+  </PlBtnGroup>
+  <div v-if="formulaTerms.length > 0">
+    <div :class="$style.formulaBox">
+      <div :class="$style.formulaTerms">
+        <span v-for="t in formulaTerms" :key="t.feature" :class="$style.term">
+          <span v-if="t.operator" :class="$style.op">{{ t.operator }}&nbsp;</span>
+          <input
+            :class="$style.coefInput"
+            type="text"
+            inputmode="decimal"
+            :disabled="!isCustomWeights"
+            :value="formatSigned(t.value)"
+            @change="(e) => onCoefInput(t.feature, e)"
+          />
+          <span>&nbsp;·&nbsp;</span>
+          <PlTooltip element="span" :class="$style.labelTip" position="top">
+            <span>{{ t.label }}</span>
+            <template #tooltip>{{ FEATURE_TOOLTIPS[t.feature] }}</template>
+          </PlTooltip>
+        </span>
+      </div>
+    </div>
+  </div>
+  <PlBtnGhost
+    v-if="isCustomWeights && formulaTerms.length > 0"
+    :class="$style.resetBtn"
+    @click.stop="resetWeights"
+  >
+    Reset to default
+    <template #append>
+      <PlMaskIcon24 name="reverse" />
+    </template>
+  </PlBtnGhost>
 </template>
 
 <style module>
-/* Rows of weight fields, stacked vertically. */
-.weightGroups {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-/* Tighten the sections's 24px flex gap between the last weight field and Reset. */
-.resetBtn {
-  margin-top: -16px;
-}
-
-/* Formula preview — a read-only monospace summary of the composite (mirrors the
-   peptide-extraction pattern preview). */
+/* Scoring-formula box — a monospace equation; coefficients are read-only in Default mode and
+   editable inline inputs in Custom mode (mirrors the peptide-extraction pattern preview). */
 .formulaLabel {
   font-size: 12px;
   font-weight: 600;
   color: var(--txt-03);
   margin-bottom: 4px;
 }
-.formulaPreview {
+.formulaBox {
   font-family: var(--font-family-monospace, monospace);
   font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.8;
   background: var(--chip-bg);
   border-radius: var(--border-radius, 6px);
   padding: 8px 10px;
   color: var(--txt-01);
 }
-.coef {
-  color: var(--color-accent-default);
-  font-weight: 600;
+/* Terms flow 1-2 per line (the min-width caps a line at two); the leading +/- sits at the line
+   start when a term wraps. */
+.formulaTerms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: baseline;
 }
-.formulaCaption {
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--txt-03);
-  margin-top: 4px;
+.term {
+  flex: 0 1 auto;
+  min-width: 45%;
+  white-space: nowrap;
+}
+.op {
+  color: var(--txt-02);
+}
+/* Feature label: hover for its explanation (dotted underline hints it's hoverable). */
+.labelTip {
+  cursor: help;
+  text-decoration: underline dotted var(--txt-03);
+  text-underline-offset: 3px;
+}
+.coefInput {
+  width: 4.5em;
+  text-align: right;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-accent-default);
+  background: var(--bg-elevated-01);
+  border: 1px solid var(--border-color-div-grey);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.coefInput:focus {
+  outline: none;
+  border-color: var(--color-accent-default);
+}
+/* Default (read-only) mode: same box so nothing shifts on toggle. Transparent so the field
+   blends into the formula box background (its --chip-bg) instead of a distinct grey patch. */
+.coefInput:disabled {
+  background: transparent;
+  -webkit-text-fill-color: var(--color-accent-default);
+  opacity: 1;
+  cursor: default;
+}
+/* Tighten the section's 24px flex gap above the Reset button. */
+.resetBtn {
+  margin-top: -16px;
 }
 </style>
