@@ -1,5 +1,5 @@
 /*
-  Workflow tests land with the composite score emission (Phase 1+), once there is a
-  fixture pool (MiXCR + Pgen; convergence pending its per-clonotype aggregation — PLAN §5.6).
-  The Phase 0 body is an intentional no-op, so there is nothing to assert yet.
+  Workflow tests are not authored yet — an end-to-end blockTest needs a fixture pool (a MiXCR
+  clonotyping + Pgen dataset; convergence pending its per-clonotype aggregation) and a running
+  backend, neither of which this repo ships. Nothing to assert until that fixture exists.
 */

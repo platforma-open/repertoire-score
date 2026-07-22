@@ -1,9 +1,11 @@
 {
   "name": "@platforma-open/milaboratories.repertoire-score.model",
   "version": "1.0.0",
+  "private": true,
   "description": "Block model",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
@@ -20,6 +22,8 @@
     "check": "ts-builder check --target block-model"
   },
   "dependencies": {
+    "@milaboratories/graph-maker": "catalog:",
+    "@milaboratories/helpers": "catalog:",
     "@platforma-sdk/model": "catalog:"
   },
   "devDependencies": {

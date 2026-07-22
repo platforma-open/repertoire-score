@@ -1,31 +1,24 @@
-import type { PlRef } from "@platforma-sdk/model";
+import type { GraphMakerState } from "@milaboratories/graph-maker";
+import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 
 /**
- * Preset family = the experimental-design context the user declares (spec A-0017 / A-0024).
- * This is the primary user-facing configuration; the tier and coefficients auto-resolve.
- * Default is "standard".
+ * Preset family = the experimental-design context the user declares. This is the primary
+ * user-facing configuration; the tier and coefficients auto-resolve. Default is "standard".
  *
  * NB: "family" here means the *preset* context — NOT a signal kind. See {@link SignalKind}.
  */
 export type PresetFamily = "standard" | "antigen-selected";
 
 /**
- * A tier the user can pin in Custom mode (spec A-0018). The baseline-absent "none"
- * state is not selectable — it means the block cannot score.
+ * A tier the user can pin in Custom mode. The baseline-absent "none" state is not
+ * selectable — it means the block cannot score.
  */
 export type SelectableTier = "1" | "2a" | "2b" | "3";
 
-/** Weight-editor mode (spec A-0015 / A-0024 advanced). */
-export type WeightMode = "preset" | "custom";
+/** Weight-editor mode. */
+export type WeightMode = "automatic" | "custom";
 
-/**
- * Unified block data (UI-editable state).
- *
- * Phase 0 carries the input dataset, the preset family (A-0024's primary knob), and the
- * scoring-signals control (A-0018 / A-0024 "advanced"). The per-feature weights /
- * custom-variant fields belong to the composite work (spec Q-0001 / A-0016, PLAN §5.1)
- * and land in a later phase — intentionally omitted here.
- */
+/** Unified block data (UI-editable state). */
 export type BlockData = {
   inputAnchor?: PlRef;
   presetFamily: PresetFamily;
@@ -34,13 +27,16 @@ export type BlockData = {
   //   "custom"    — pin `tier` explicitly.
   tierMode: "automatic" | "custom";
   tier?: SelectableTier;
-  // Weight editor: "preset" uses the calibrated coefficients; "custom" uses `customWeights`,
-  // seeded from the preset defaults. (Defaults are the stub seam — all 1 — pending real
-  // coefficients from the composite work, PLAN §5.1.)
+  // Weight editor: "automatic" uses the calibrated preset coefficients; "custom" uses
+  // `customWeights`, seeded from the preset defaults.
   weightMode: WeightMode;
-  // Per-feature custom weights (spec A-0027 granularity). Only edited features are stored; the
-  // rest fall back to the preset default. Persists across preset/custom toggles; Reset clears it.
+  // Per-feature custom weights. Only edited features are stored; the rest fall back to the
+  // preset default. Persists across preset/custom toggles; Reset clears it.
   customWeights?: Partial<Record<FeatureKey, number>>;
+  // View state for the Main-page results table (UI-only; never projected to args).
+  tableState: PlDataTableStateV2;
+  // View state for the Distributions histogram (score + per-feature). UI-only.
+  graphStateHistogram: GraphMakerState;
 };
 
 /** Workflow args projected from `data`. The workflow resolves the effective tier from
@@ -56,18 +52,22 @@ export type BlockArgs = {
   // resolves the effective tier from the columns it discovers, then indexes this map — so
   // the coefficients travel with args rather than being duplicated in Tengo.
   coefficients: Record<SelectableTier, Partial<Record<FeatureKey, number>>>;
+  // Static feature taxonomy shipped from the model so it has ONE source of truth
+  // (presets.ts FEATURE_ORDER / FEATURE_SIGNAL) instead of a hand-kept Tengo copy. The
+  // workflow needs a canonical order anyway (Tengo map iteration is non-deterministic).
+  featureOrder: FeatureKey[];
+  featureSignal: Record<FeatureKey, SignalKind>;
 };
 
 /**
- * One component signal the composite can draw from (spec A-0016 features).
- * Distinct from {@link PresetFamily}: "family" in the spec is the preset context,
- * not the signal kind.
+ * One component signal the composite can draw from. Distinct from {@link PresetFamily}:
+ * "family" is the preset context, not the signal kind.
  */
 export type SignalKind = "mutations" | "abundance" | "pgen" | "convergence";
 
 /**
- * A single composite feature — the granularity the coefficients are defined at (spec A-0027).
- * One signal can expand to several features (mutations → 4). Grouped back to signals in the UI.
+ * A single composite feature — the granularity the coefficients are defined at. One signal
+ * can expand to several features (mutations → 4). Grouped back to signals in the UI.
  */
 export type FeatureKey =
   | "cdrMutationFraction"
@@ -79,9 +79,8 @@ export type FeatureKey =
   | "fastStar";
 
 /**
- * Preset tier implied by which upstream signals are present (spec A-0018).
- * `"none"` = the MiXCR baseline (mutations / abundance) is not present, so the
- * block cannot score.
+ * Preset tier implied by which upstream signals are present. `"none"` = the MiXCR baseline
+ * (mutations / abundance) is not present, so the block cannot score.
  */
 export type PresetTier = "none" | SelectableTier;
 

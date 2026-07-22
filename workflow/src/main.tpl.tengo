@@ -1,15 +1,15 @@
 // Repertoire Score — workflow.
 //
 // Consumes the selected clonotype dataset anchor and emits ONE composite score per
-// clonotype (spec A-0023). The score is a percentile-normalised linear combination of
-// the per-clonotype signal columns discovered on the input (spec A-0016 / A-0027):
+// clonotype. The score is a percentile-normalised linear combination of the per-clonotype
+// signal columns discovered on the input:
 //   1. discover candidate per-clonotype columns anchored on the clonotype-key axis;
 //   2. classify each into a composite feature (mutations / abundance / pgen / convergence);
 //   3. resolve the effective preset tier from the signals actually present;
 //   4. hand the feature columns + their coefficients to the pt recipe (compute-score.lib);
-//   5. export the score PColumn with the A-0023 spec + provenance trace.
+//   5. export the score PColumn with its spec + provenance trace.
 //
-// Output score PColumn (spec A-0023):
+// Output score PColumn:
 //   name        : pl7.app/vdj/repertoireScore
 //   axis        : input clonotypeKey (bulk) / scClonotypeKey (SC), unchanged
 //   value range : [0, 1]
@@ -26,6 +26,10 @@ text := import("text")
 computeScore := import(":compute-score")
 
 // --- Upstream column names / annotations we classify against. ---
+// MUST stay in sync with the model's classifyFeature (model/src/index.ts), which recognizes
+// the same columns for the reactive UI tier detection. No shared code across the TS/Tengo
+// boundary, so any change here must be mirrored there (and vice-versa) — otherwise the UI
+// advertises a signal this workflow can't feed, or the reverse.
 SEQ_CDR_FRAC := "pl7.app/vdj/sequence/fractionCDRMutations"
 SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
 SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
@@ -33,32 +37,31 @@ SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
 NEG_LOG_PGEN := "pl7.app/vdj/negLog10GenerationProbability"
 CONV_PREFIX := "pl7.app/vdj/convergence/"
 ABUNDANCE_ANN := "pl7.app/isAbundance"
+ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
+ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
 SC_CHAIN_DOMAIN := "pl7.app/vdj/scClonotypeChain"
 CHAIN_DOMAIN := "pl7.app/vdj/chain"
 RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
 
-// FeatureKey -> composite signal kind (mirrors model presets.FEATURE_SIGNAL).
-FEATURE_SIGNAL := {
-	cdrMutationFraction: "mutations",
-	aaMutationsCDR: "mutations",
-	aaMutationsFWR: "mutations",
-	ntMutations: "mutations",
-	logCells: "abundance",
-	negLogPgen: "pgen",
-	fastStar: "convergence"
-}
+// Mirror of model HISTOGRAM_VALUE_ANNOTATION — stamped on the score + feature columns of the
+// display frame so the Distributions histogram (via dataColumnPredicate) offers only these
+// as selectable values, while the enriched PFrame keeps pool metadata for grouping/labels.
+HISTOGRAM_VALUE_ANN := "pl7.app/vdj/repertoireScore/distributionValue"
 
-// Deterministic iteration orders (map iteration order is non-deterministic in Tengo,
-// and this is a pure template — output must be reproducible).
-FEATURE_ORDER := ["cdrMutationFraction", "aaMutationsCDR", "aaMutationsFWR", "ntMutations", "logCells", "negLogPgen", "fastStar"]
+// The feature->signal map and the canonical feature order come from args
+// (args.featureSignal / args.featureOrder) — single source of truth in the model's
+// presets.ts, no Tengo copy to drift. The canonical order matters because Tengo map
+// iteration is non-deterministic and this is a pure (reproducible) template.
 SLOT_ORDER := ["A", "B", ""]
 
-// Tier -> preset-id variant tag (spec A-0023).
+// Tier -> preset-id variant tag.
 TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
 
 // Classify one upstream column into { fk, transform } or undefined.
 //   transform: "identity" | "log1p" | "faststar" — raw->analysis mapping applied in pt.
-classify := func(col) {
+// abundanceUnit is the dataset's PRIMARY abundance unit (read off the input anchor:
+// "cells" single-cell, "reads"/"molecules" bulk) — used to pin the abundance feature.
+classify := func(col, abundanceUnit) {
 	name := col.spec.name
 	if name == SEQ_CDR_FRAC {
 		return { fk: "cdrMutationFraction", transform: "identity" }
@@ -78,8 +81,19 @@ classify := func(col) {
 	}
 	ann := col.spec.annotations
 	if !is_undefined(ann) && ann[ABUNDANCE_ANN] == "true" {
-		// Cell/read count -> log1p to compress the heavy tail.
-		return { fk: "logCells", transform: "log1p" }
+		// The abundance feature is the PRIMARY clonal-size total: log1p(Supporting Cells)
+		// for single-cell; the bulk analogue is Supporting Reads / Supporting UMIs.
+		// MiXCR marks several columns isAbundance; select only the right one:
+		//   - never "samples" (sample-count is clonotype prevalence, NOT abundance);
+		//   - never normalized fractions (we want the raw count for log1p);
+		//   - match the dataset's primary abundance unit when known, so bulk picks the
+		//     read/molecule total and single-cell picks the cell total.
+		unit := ann[ABUNDANCE_UNIT_ANN]
+		normalized := ann[ABUNDANCE_NORM_ANN]
+		unitOk := is_undefined(abundanceUnit) ? unit != "samples" : unit == abundanceUnit
+		if normalized != "true" && unitOk {
+			return { fk: "logCells", transform: "log1p" }
+		}
 	}
 	if text.has_prefix(name, CONV_PREFIX) {
 		// Convergence maps to the fastStar coefficient slot. Prefer a numeric
@@ -105,6 +119,25 @@ slotOf := func(col, isSingleCell) {
 	return dom[SC_CHAIN_DOMAIN]
 }
 
+// Copy `spec` with the distribution-value flag added — marks the score + feature columns so
+// the Distributions histogram can offer only them as selectable values (see model
+// HISTOGRAM_VALUE_ANNOTATION). Applied only to the display frame, never to the exported score.
+withDistributionFlag := func(spec) {
+	ann := {}
+	if !is_undefined(spec.annotations) {
+		for k, v in spec.annotations {
+			ann[k] = v
+		}
+	}
+	ann[HISTOGRAM_VALUE_ANN] = "true"
+	out := {}
+	for k, v in spec {
+		out[k] = v
+	}
+	out.annotations = ann
+	return out
+}
+
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
 	bb.ignoreMissingDomains()
@@ -123,10 +156,27 @@ wf.body(func(args) {
 	keyAxisSpec := datasetSpec.axesSpec[1]
 	isSingleCell := keyAxisSpec.name == "pl7.app/vdj/scClonotypeKey"
 
+	// The input anchor IS the dataset's primary abundance column (isAnchor/isPrimary), so
+	// its unit names the abundance the score should use — "cells" (single-cell), "reads" or
+	// "molecules" (bulk). The abundance feature is then pinned to the per-clonotype total of
+	// that same unit (Supporting Cells / Reads / UMIs), never sample-count.
+	abundanceUnit := is_undefined(datasetSpec.annotations) ? undefined : datasetSpec.annotations[ABUNDANCE_UNIT_ANN]
+
 	// --- Classify discovered columns into slots[slot][featureKey] = { col, transform }. ---
+	// Also grab the clonotype-label column (friendly "Clone Id") for the results table.
 	slots := {}
+	cloneLabelCol := undefined
 	for col in columns.getColumns("features") {
-		cl := classify(col)
+		if is_undefined(cloneLabelCol) {
+			// The per-clonotype "Clone Id" label carries the canonical label spec name
+			// ("pl7.app/label") in both bulk and single-cell; fall back to the isLabel
+			// annotation / ref-name suffix for older upstreams.
+			labelAnn := is_undefined(col.spec.annotations) ? undefined : col.spec.annotations["pl7.app/isLabel"]
+			if col.spec.name == "pl7.app/label" || labelAnn == "true" || text.has_suffix(col.spec.name, "clonotype-label") {
+				cloneLabelCol = col
+			}
+		}
+		cl := classify(col, abundanceUnit)
 		if is_undefined(cl) {
 			continue
 		}
@@ -153,7 +203,7 @@ wf.body(func(args) {
 			continue
 		}
 		for fk, _ in fkMap {
-			presentSignals[FEATURE_SIGNAL[fk]] = true
+			presentSignals[args.featureSignal[fk]] = true
 		}
 	}
 	hasMixcr := presentSignals["mutations"] == true || presentSignals["abundance"] == true
@@ -205,7 +255,7 @@ wf.body(func(args) {
 		if is_undefined(fkMap) {
 			continue
 		}
-		for fk in FEATURE_ORDER {
+		for fk in args.featureOrder {
 			entry := fkMap[fk]
 			if is_undefined(entry) {
 				continue
@@ -231,7 +281,7 @@ wf.body(func(args) {
 	ll.assert(len(inputCols) > 0,
 		"no scorable feature columns present for the resolved preset (family %s, tier %s)", args.presetFamily, tier)
 
-	// --- Output score PColumn spec (A-0023). ---
+	// --- Output score PColumn spec. ---
 	variant := TIER_VARIANT[tier]
 	presetId := args.presetFamily + "-" + variant
 	if args.weightMode == "custom" {
@@ -259,7 +309,8 @@ wf.body(func(args) {
 			"pl7.app/isScore": "true",
 			"pl7.app/label": "Repertoire score",
 			"pl7.app/description": args.presetFamily + " family, tier " + tier + " (" + variant + ")",
-			"pl7.app/score/defaultCutoff": "0.8"
+			"pl7.app/score/defaultCutoff": "0.8",
+			"pl7.app/table/orderPriority": "95000"
 		}
 	}
 
@@ -276,13 +327,33 @@ wf.body(func(args) {
 		label: traceLabel
 	})
 
+	scoreSpecTraced := trace.inject(scoreCol.spec)
+
+	// Export family: the score column only.
 	frameBuilder := pframes.pFrameBuilder()
-	frameBuilder.add("score", trace.inject(scoreCol.spec), scoreCol.data)
+	frameBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	scoreFrame := frameBuilder.build()
+
+	// Block-private results table (Main page): Clone Id + score + exactly the metrics
+	// that fed the score — nothing else. Every column is per-clonotype (the features
+	// were discovered on the clonotype axis, and the score is emitted on it), so the
+	// table is naturally one row per clonotype. The model renders these columns as-is
+	// (no pool discovery), so the displayed set is precisely "score + used metrics".
+	// The score + feature columns carry the distribution-value flag (for the histogram value
+	// picker); the Clone Id label does not — it's an identifier, not a distribution.
+	tableBuilder := pframes.pFrameBuilder()
+	if !is_undefined(cloneLabelCol) {
+		tableBuilder.add("cloneId", cloneLabelCol.spec, cloneLabelCol.data)
+	}
+	tableBuilder.add("score", withDistributionFlag(scoreSpecTraced), scoreCol.data)
+	for c in inputCols {
+		tableBuilder.add(c.header, withDistributionFlag(c.spec), c.data)
+	}
+	tableFrame := tableBuilder.build()
 
 	return {
 		outputs: {
-			scorePf: pframes.exportFrame(scoreFrame)
+			tablePf: pframes.exportFrame(tableFrame)
 		},
 		exports: {
 			score: scoreFrame

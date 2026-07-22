@@ -3,7 +3,6 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
-  SignalKind,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   defaultFeatureWeights,
@@ -22,10 +21,17 @@ import {
 } from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
+import { SIGNAL_LABELS } from "../labels";
 
 const app = useApp();
 
-// A-0024: preset family is the primary user-facing configuration for this block.
+// `featureAvailability` is a retentive model output (see model): it holds its last stable
+// value while the block reruns, instead of transiently shrinking as the upstream enrichment
+// columns drop out of the anchored discovery mid-run. So the Settings controls can read it
+// directly and the "Signals used" dropdown keeps its options during a run.
+const availability = computed(() => app.model.outputs.featureAvailability);
+
+// Preset family is the primary user-facing configuration for this block.
 const familyOptions: { value: PresetFamily; label: string }[] = [
   { value: "standard", label: "Standard" },
   { value: "antigen-selected", label: "Antigen-selected" },
@@ -37,26 +43,17 @@ const tierModeOptions = [
 ];
 
 const weightModeOptions = [
-  { value: "preset" as const, label: "Preset" },
+  { value: "automatic" as const, label: "Automatic" },
   { value: "custom" as const, label: "Custom" },
 ];
 
-// Biologist-facing labels — by signals, not tier ids (A-0018). "Base" = the
-// mutations + abundance MiXCR floor that every tier includes; higher tiers add
-// signals on top. Tier 1 defines it; the rest reference it.
+// Biologist-facing labels — by signals, not tier ids. "Base" = the mutations + abundance
+// MiXCR floor that every tier includes; higher tiers add signals on top.
 const TIER_LABELS: Record<SelectableTier, string> = {
   "1": "Base: mutations + abundance",
   "2a": "Base + Convergence",
   "2b": "Base + Generation probability",
   "3": "Base + Convergence + Generation probability",
-};
-
-// Signal-group headers for the weight editor.
-const SIGNAL_LABELS: Record<SignalKind, string> = {
-  mutations: "Mutations",
-  abundance: "Abundance",
-  pgen: "Generation probability",
-  convergence: "Convergence",
 };
 
 // Per-feature labels + zero-prior-knowledge explanations (weight editor rows).
@@ -82,7 +79,7 @@ const FEATURE_TOOLTIPS: Record<FeatureKey, string> = {
 
 // The Custom dropdown lists only tiers reachable with the signals actually present.
 const tierOptions = computed(() =>
-  (app.model.outputs.featureAvailability?.reachableTiers ?? []).map((t) => ({
+  (availability.value?.reachableTiers ?? []).map((t) => ({
     value: t,
     label: TIER_LABELS[t],
   })),
@@ -94,7 +91,7 @@ const tierOptions = computed(() =>
 // for this input (e.g. unsupported species). The user reads the source and runs it
 // if their data allows. Only shown once the base (MiXCR) is present.
 const suggestions = computed(() => {
-  const a = app.model.outputs.featureAvailability;
+  const a = availability.value;
   if (!a || !a.hasMixcr) return [];
   const out: string[] = [];
   if (!a.hasPgen)
@@ -108,10 +105,10 @@ const suggestions = computed(() => {
 function setTierMode(mode: "automatic" | "custom") {
   app.model.data.tierMode = mode;
   if (mode === "custom") {
-    const reachable = app.model.outputs.featureAvailability?.reachableTiers ?? [];
+    const reachable = availability.value?.reachableTiers ?? [];
     const current = app.model.data.tier;
     if (current === undefined || !reachable.includes(current)) {
-      const auto = app.model.outputs.featureAvailability?.tier;
+      const auto = availability.value?.tier;
       app.model.data.tier = auto && auto !== "none" ? auto : reachable[reachable.length - 1];
     }
   }
@@ -119,13 +116,13 @@ function setTierMode(mode: "automatic" | "custom") {
 
 // The tier the score would actually use: pinned in custom, else the auto pick.
 const resolvedTier = computed<SelectableTier | undefined>(() => {
-  const a = app.model.outputs.featureAvailability;
+  const a = availability.value;
   if (!a || a.tier === "none") return undefined;
   if (app.model.data.tierMode === "custom" && app.model.data.tier) return app.model.data.tier;
   return a.tier;
 });
 
-// Preset default coefficients for the resolved (family, tier) — the real A-0027 values.
+// Preset default coefficients for the resolved (family, tier).
 const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
   resolvedTier.value ? defaultFeatureWeights(app.model.data.presetFamily, resolvedTier.value) : {},
 );
@@ -212,7 +209,7 @@ function startsGroup(index: number): boolean {
     <PlBtnGroup v-model="app.model.data.weightMode" :options="weightModeOptions" label="Weights">
       <template #tooltip>
         How much each feature contributes to the final score.<br />
-        <b>Preset</b> — calibrated defaults (recommended).<br />
+        <b>Automatic</b> — calibrated preset defaults (recommended).<br />
         <b>Custom</b> — set the weights yourself.
       </template>
     </PlBtnGroup>
@@ -237,8 +234,7 @@ function startsGroup(index: number): boolean {
         </template>
       </PlBtnGhost>
       <PlAlert type="info">
-        Provisional v1 coefficients (A-0027) — Standard hand-set, Antigen-selected fitted on one
-        dataset.
+        Provisional v1 coefficients — Standard hand-set, Antigen-selected fitted on one dataset.
       </PlAlert>
     </template>
   </PlAccordionSection>

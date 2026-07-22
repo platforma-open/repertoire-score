@@ -1,4 +1,4 @@
-// Composite repertoire score — the pure-pt (Polars) computation (spec A-0027).
+// Composite repertoire score — the pure-pt (Polars) computation.
 //
 // One score per clonotype, computed over a single global window (the whole input).
 // The recipe: median-impute each feature, percentile-rank it, take the coefficient-
@@ -31,7 +31,7 @@ GRP := "__grp"
  *   - coef      : signed coefficient applied to this feature's percentile rank
  *                 (already scaled by 0.20 for light-chain siblings).
  * @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
- * @param scoreSpec   - the output score PColumn spec (A-0023), sans axesSpec.
+ * @param scoreSpec   - the output score PColumn spec, sans axesSpec.
  * @return the score PColumn { spec, data }.
  */
 computeScore := func(inputCols, keyAxisSpec, scoreSpec) {

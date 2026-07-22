@@ -23,13 +23,13 @@ export const FEATURE_SIGNAL: Record<FeatureKey, SignalKind> = {
 };
 
 /**
- * v1 preset coefficients (spec A-0027), keyed by (family, tier). Values are heavy-chain
- * coefficients; light-chain analogues are 0.20× (sign preserved) at compute time per A-0019.
+ * v1 preset coefficients, keyed by (family, tier). Values are heavy-chain coefficients;
+ * light-chain analogues are 0.20× (sign preserved) at compute time.
  *
  * - Standard family: hand-set, non-negative, sum-to-1 (biology-informed direction).
  * - Antigen-selected family: fitted logistic regression on percentile-ranked features — signed.
  *
- * Both are v1 provisional (single Chirichella dataset — see A-0021). The feature *set* differs
+ * Both are v1 provisional (fitted on a single Chirichella dataset). The feature *set* differs
  * per (family, tier): e.g. standard-mutations reproduces the legacy in-vivo formula.
  */
 export const PRESET_COEFFICIENTS: Record<
@@ -97,7 +97,7 @@ export const PRESET_COEFFICIENTS: Record<
   },
 };
 
-/** Default per-feature coefficients for the resolved (family, tier) preset (spec A-0027). */
+/** Default per-feature coefficients for the resolved (family, tier) preset. */
 export function defaultFeatureWeights(
   family: PresetFamily,
   tier: SelectableTier,
