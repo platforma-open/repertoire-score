@@ -19,6 +19,7 @@ import {
   PlMaskIcon24,
   PlNumberField,
   PlRow,
+  PlSectionSeparator,
 } from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
@@ -133,14 +134,24 @@ const presetFeatures = computed<FeatureKey[]>(() =>
 );
 
 // Weight-editor rows: mutations together, abundance on its own, generation probability +
-// convergence sharing a row. Each row keeps its features in formula order (FEATURE_ORDER),
-// and empty rows (signals absent for the resolved tier) are dropped.
+// convergence sharing a row. Features stay in formula order (FEATURE_ORDER) and empty groups
+// (signals absent for the resolved tier) are dropped. A group of up to 3 features stays on one
+// row; a larger group (the Antigen-selected mutations set has 4) is split into rows of 2 so a
+// row never gets cramped.
 const WEIGHT_ROWS: SignalKind[][] = [["mutations"], ["abundance"], ["pgen", "convergence"]];
-const featureRows = computed<FeatureKey[][]>(() =>
-  WEIGHT_ROWS.map((signals) =>
-    presetFeatures.value.filter((f) => signals.includes(FEATURE_SIGNAL[f])),
-  ).filter((row) => row.length > 0),
-);
+const featureRows = computed<FeatureKey[][]>(() => {
+  const rows: FeatureKey[][] = [];
+  for (const signals of WEIGHT_ROWS) {
+    const group = presetFeatures.value.filter((f) => signals.includes(FEATURE_SIGNAL[f]));
+    if (group.length === 0) continue;
+    if (group.length <= 3) {
+      rows.push(group);
+    } else {
+      for (let i = 0; i < group.length; i += 2) rows.push(group.slice(i, i + 2));
+    }
+  }
+  return rows;
+});
 
 // Displayed value: the user's edit if present, else the preset default.
 function weightValue(feature: FeatureKey): number {
@@ -156,6 +167,34 @@ function setWeight(feature: FeatureKey, v: number | undefined) {
 function resetWeights() {
   app.model.data.customWeights = {};
 }
+
+// Read-only preview of the composite the workflow will apply. The effective coefficient
+// per feature is mode-dependent: in "default" weight mode the workflow uses the preset
+// coefficients and ignores any stored customWeights (see model index.ts), so the preview
+// reads the preset defaults; in "custom" mode it reflects the edited weights. Rendered as
+// highlightable segments (coefficients emphasised), like peptide-extraction's pattern preview.
+type FormulaSegment = { text: string; coef?: boolean };
+
+function formatCoef(c: number): string {
+  return Number(Math.abs(c).toFixed(2)).toString();
+}
+
+const formulaSegments = computed<FormulaSegment[]>(() => {
+  if (!resolvedTier.value || presetFeatures.value.length === 0) return [];
+  const custom = app.model.data.weightMode === "custom";
+  const terms: FormulaSegment[] = [];
+  for (const f of presetFeatures.value) {
+    const coef = custom
+      ? (app.model.data.customWeights?.[f] ?? weightDefaults.value[f] ?? 0)
+      : (weightDefaults.value[f] ?? 0);
+    if (Math.round(Math.abs(coef) * 100) === 0) continue; // rounds to 0 — no contribution
+    terms.push({ text: terms.length === 0 ? (coef < 0 ? "−" : "") : coef < 0 ? " − " : " + " });
+    terms.push({ text: formatCoef(coef), coef: true });
+    terms.push({ text: " · " + FEATURE_LABELS[f] });
+  }
+  if (terms.length === 0) return [];
+  return [{ text: "percentile( " }, ...terms, { text: " )" }];
+});
 </script>
 
 <template>
@@ -183,6 +222,20 @@ function resetWeights() {
     <div v-for="s in suggestions" :key="s">{{ s }}</div>
   </PlAlert>
 
+  <PlSectionSeparator>Score computation</PlSectionSeparator>
+
+  <div v-if="formulaSegments.length > 0">
+    <div :class="$style.formulaLabel">Scoring formula</div>
+    <div :class="$style.formulaPreview">
+      <span
+        v-for="(seg, i) in formulaSegments"
+        :key="i"
+        :class="seg.coef ? $style.coef : undefined"
+        >{{ seg.text }}</span
+      >
+    </div>
+  </div>
+
   <PlBtnGroup v-model="app.model.data.weightMode" :options="weightModeOptions" label="Weights">
     <template #tooltip>
       How much each feature contributes to the final score.<br />
@@ -191,9 +244,8 @@ function resetWeights() {
     </template>
   </PlBtnGroup>
   <template v-if="app.model.data.weightMode === 'custom' && featureRows.length > 0">
-    <!-- Weight fields grouped into rows (mutations together, abundance alone, generation
-          probability + convergence sharing a row), in formula order. When a row has more than
-          one field the fields grow (flex-1) to fill the row's full width. -->
+    <!-- Weight fields laid out row by row (see featureRows: signals grouped, groups larger
+          than 3 split into pairs). Fields in a row grow (flex-1) to fill the full width. -->
     <div :class="$style.weightGroups">
       <div v-for="(row, i) in featureRows" :key="i">
         <PlRow>
@@ -254,5 +306,35 @@ function resetWeights() {
 /* Tighten the sections's 24px flex gap between the last weight field and Reset. */
 .resetBtn {
   margin-top: -16px;
+}
+
+/* Formula preview — a read-only monospace summary of the composite (mirrors the
+   peptide-extraction pattern preview). */
+.formulaLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--txt-03);
+  margin-bottom: 4px;
+}
+.formulaPreview {
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--chip-bg);
+  border-radius: var(--border-radius, 6px);
+  padding: 8px 10px;
+  color: var(--txt-01);
+}
+.coef {
+  color: var(--color-accent-default);
+  font-weight: 600;
+}
+.formulaCaption {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--txt-03);
+  margin-top: 4px;
 }
 </style>
