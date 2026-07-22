@@ -8,18 +8,8 @@ import {
   PlSlideModal,
   usePlDataTableSettingsV2,
 } from "@platforma-sdk/ui-vue";
-import type {
-  FeatureKey,
-  SelectableTier,
-  SignalKind,
-} from "@platforma-open/milaboratories.repertoire-score.model";
-import {
-  defaultFeatureWeights,
-  FEATURE_SIGNAL,
-} from "@platforma-open/milaboratories.repertoire-score.model";
 import { computed, reactive } from "vue";
 import { useApp } from "../app";
-import { SIGNAL_DISPLAY_ORDER, SIGNAL_LABELS } from "../labels";
 import SettingsPanel from "./SettingsPanel.vue";
 
 const app = useApp();
@@ -43,38 +33,13 @@ const settingsOpen = computed({
   },
 });
 
-const availability = computed(() => app.model.outputs.featureAvailability);
-
-const summary = computed(() => {
-  const a = availability.value;
-  if (!a) return undefined;
-  if (a.tier === "none") {
-    return {
-      type: "warn" as const,
-      text: "Cannot score: MiXCR clonotyping features (mutations / abundance) not found for this dataset.",
-    };
-  }
-  // Report the signals the score actually USES, not merely what's detected. In Custom mode the
-  // user can pin a lower tier that uses a subset of the available signals. Derive from the
-  // applied preset's feature set (the single source of truth in presets.ts), mapped to
-  // signals, keeping only present ones.
-  const appliedTier: SelectableTier =
-    app.model.data.tierMode === "custom" && app.model.data.tier ? app.model.data.tier : a.tier;
-  const detected = new Set<SignalKind>(a.signals);
-  const used = new Set<SignalKind>();
-  for (const f of Object.keys(
-    defaultFeatureWeights(app.model.data.presetFamily, appliedTier),
-  ) as FeatureKey[]) {
-    const signal = FEATURE_SIGNAL[f];
-    if (detected.has(signal)) used.add(signal);
-  }
-  const signalList = SIGNAL_DISPLAY_ORDER.filter((s) => used.has(s))
-    .map((s) => SIGNAL_LABELS[s])
-    .join(", ");
-  return {
-    type: "info" as const,
-    text: `Scoring on ${signalList}.`,
-  };
+// Blocking error only: the dataset carries no MiXCR mutation/abundance features, so the block
+// cannot score. Absent otherwise — the "which signals" read-out lives in Settings, not here.
+const scoreError = computed(() => {
+  const a = app.model.outputs.featureAvailability;
+  return a && a.tier === "none"
+    ? "Cannot score: MiXCR clonotyping features (mutations / abundance) not found for this dataset."
+    : undefined;
 });
 
 // Results table: Clone Id + score + the metrics that fed it (from the workflow's tablePf).
@@ -99,8 +64,8 @@ const tableSettings = usePlDataTableSettingsV2({
     </PlAlert>
 
     <template v-else>
-      <PlAlert v-if="summary" :type="summary.type">
-        {{ summary.text }}
+      <PlAlert v-if="scoreError" type="warn">
+        {{ scoreError }}
       </PlAlert>
 
       <PlAgDataTableV2
@@ -113,7 +78,7 @@ const tableSettings = usePlDataTableSettingsV2({
     </template>
   </PlBlockPage>
 
-  <PlSlideModal v-model="settingsOpen" :shadow="true">
+  <PlSlideModal v-model="settingsOpen" :shadow="true" width="40%">
     <template #title>Settings</template>
     <SettingsPanel />
   </PlSlideModal>

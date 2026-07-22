@@ -2,7 +2,7 @@
 import type { PredefinedGraphOption } from "@milaboratories/graph-maker";
 import { GraphMaker } from "@milaboratories/graph-maker";
 import {
-  defaultGraphStateHistogram,
+  defaultGraphStateScatter,
   isPlottableColumn,
   REPERTOIRE_SCORE_COLUMN,
 } from "@platforma-open/milaboratories.repertoire-score.model";
@@ -12,26 +12,32 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// The PFrame is enriched (pool metadata/linker columns available for grouping/labelling), but
-// only the score + available per-clonotype signals should be offerable as the histogram value.
+// Intended to restrict the X/Y axes to the score + signals; the grouping/color/tooltip
+// palette is deliberately left open to the wider pool. NOTE: this predicate does not currently
+// take effect on the scatter axes — pool columns (e.g. "Clone Id") still appear as X/Y options.
 const dataColumnPredicate = isPlottableColumn;
 
 // GraphMaker reads `initialData.optionsState` eagerly, so guarantee a non-undefined object.
 const graphState = computed({
-  get: () => app.model.data.graphStateHistogram ?? defaultGraphStateHistogram(),
+  get: () => app.model.data.graphStateScatter ?? defaultGraphStateScatter(),
   set: (v) => {
-    app.model.data.graphStateHistogram = v;
+    app.model.data.graphStateScatter = v;
   },
 });
 
-// Default the value to the score so the score distribution renders straight away; the user
-// re-binds it to any available signal via the graph-maker UI.
-const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
+// Default X = the composite score, Y = the first available feature — a ready-to-read plot the
+// user can then re-bind to any pair of signals.
+const defaultOptions = computed((): PredefinedGraphOption<"scatterplot">[] | undefined => {
   const pcols = app.model.outputs.histogramPfPcols;
   if (!pcols) return undefined;
   const scoreCol = pcols.find((p) => p.spec.name === REPERTOIRE_SCORE_COLUMN);
+  const firstFeature = pcols.find((p) => p.spec.name !== REPERTOIRE_SCORE_COLUMN);
   if (!scoreCol) return undefined;
-  return [{ inputName: "value", selectedSource: scoreCol.spec }];
+  const opts: PredefinedGraphOption<"scatterplot">[] = [
+    { inputName: "x", selectedSource: scoreCol.spec },
+  ];
+  if (firstFeature) opts.push({ inputName: "y", selectedSource: firstFeature.spec });
+  return opts;
 });
 </script>
 
@@ -39,13 +45,13 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
   <PlBlockPage>
     <GraphMaker
       v-model="graphState"
-      chart-type="histogram"
+      chart-type="scatterplot"
       :data-state-key="app.model.outputs.histogramPf"
       :p-frame="app.model.outputs.histogramPf"
       :default-options="defaultOptions"
       :data-column-predicate="dataColumnPredicate"
       :status-text="{
-        noPframe: { title: 'Press Run to compute the score, then pick a signal to plot.' },
+        noPframe: { title: 'Press Run to compute the score, then pick two signals to compare.' },
       }"
     />
   </PlBlockPage>

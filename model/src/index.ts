@@ -29,11 +29,8 @@ import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 export * from "./types";
 export * from "./presets";
 
-// Annotation the workflow stamps onto the score + its feature columns in the display frame.
-// The Distributions histogram uses it (via GraphMaker's dataColumnPredicate) to offer only
-// these as selectable values, while the enriched PFrame still carries pool metadata/linker
-// columns for grouping/labelling. Mirrored as a literal in workflow/main.tpl.tengo.
-export const HISTOGRAM_VALUE_ANNOTATION = "pl7.app/vdj/repertoireScore/distributionValue";
+// The composite score column emitted by the workflow.
+export const REPERTOIRE_SCORE_COLUMN = "pl7.app/vdj/repertoireScore";
 
 // The clonotype dataset this block scores — any of the three shapes (bulk /
 // single-cell / paired). All are single-cell/bulk clonotype anchors keyed on
@@ -67,18 +64,41 @@ const MUTATION_COLUMN_NAMES = new Set([
 // feeds that one (workflow NEG_LOG_PGEN); recognizing the raw would advertise a Pgen tier
 // the workflow then can't classify.
 const PGEN_COLUMN_NAME = "pl7.app/vdj/negLog10GenerationProbability";
-// Match convergence by name prefix, not a fixed name: the per-clonotype aggregation the
-// convergence block is planning will land under this prefix.
-const CONVERGENCE_PREFIX = "pl7.app/vdj/convergence/";
+// Convergence signal = the neighbour frequency (the continuous fast-STAR value). Matched by
+// exact name so the raw neighbour count (convergence/neighbours) and the Hit/Not-hit flag
+// (convergence/fastStar) are not treated as composite features.
+const CONVERGENCE_NBFREQ = "pl7.app/vdj/convergence/nbFreq";
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
   const name = spec.name;
+  const ann = spec.annotations;
   if (name === PGEN_COLUMN_NAME) return "pgen";
-  if (name.startsWith(CONVERGENCE_PREFIX)) return "convergence";
-  if (spec.annotations?.["pl7.app/isAbundance"] === "true") return "abundance";
+  if (name === CONVERGENCE_NBFREQ) return "convergence";
+  // Abundance total only — mirror the workflow's rule: raw count (not a normalized fraction),
+  // and a clonal-size unit (cells / reads / molecules), never `samples` (sample-count is
+  // clonotype prevalence, not abundance). Keeps sample-count and fractions out of both tier
+  // detection and the histogram value picker.
+  if (
+    ann?.["pl7.app/isAbundance"] === "true" &&
+    ann["pl7.app/abundance/normalized"] !== "true" &&
+    ann["pl7.app/abundance/unit"] !== "samples"
+  ) {
+    return "abundance";
+  }
   if (MUTATION_COLUMN_NAMES.has(name)) return "mutations";
   return undefined;
+}
+
+/**
+ * Whether a column should be offered as a value in the plots — the composite score plus every
+ * recognized per-clonotype signal present (used by the current preset or not). Applied UI-side
+ * via GraphMaker's `dataColumnPredicate`. Single-axis excludes the per-(sample,clonotype) copies
+ * the enrichment drags in; the score / classifyFeature check excludes non-signal pool columns.
+ */
+export function isPlottableColumn(spec: PColumnSpec): boolean {
+  if (spec.axesSpec.length !== 1) return false;
+  return spec.name === REPERTOIRE_SCORE_COLUMN || classifyFeature(spec) !== undefined;
 }
 
 /**
@@ -164,12 +184,20 @@ export const defaultGraphStateHistogram = (): GraphMakerState => ({
   },
 });
 
+/** Default state for the Comparison scatterplot (one signal vs another). */
+export const defaultGraphStateScatter = (): GraphMakerState => ({
+  title: "Score comparison",
+  template: "dots",
+  currentTab: null,
+});
+
 const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
   presetFamily: "standard",
-  tierMode: "automatic",
-  weightMode: "automatic",
+  tierMode: "default",
+  weightMode: "default",
   tableState: createPlDataTableStateV2(),
   graphStateHistogram: defaultGraphStateHistogram(),
+  graphStateScatter: defaultGraphStateScatter(),
 }));
 
 export const platforma = BlockModelV3.create(dataModel)
@@ -181,7 +209,7 @@ export const platforma = BlockModelV3.create(dataModel)
     // so they stale the block.
     //
     // Custom weights count only when the mode is "custom" AND at least one weight is
-    // actually set. "Custom with no edits" collapses to "automatic": identical args (no
+    // actually set. "Custom with no edits" collapses to "default": identical args (no
     // spurious re-run) and cleaner provenance (unedited custom = the base preset).
     const customWeights =
       data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
@@ -189,10 +217,10 @@ export const platforma = BlockModelV3.create(dataModel)
       inputAnchor: data.inputAnchor,
       presetFamily: data.presetFamily,
       tierMode: data.tierMode,
-      // Pinned tier only matters in custom mode; drop it in automatic so a stale
+      // Pinned tier only matters in custom mode; drop it in default so a stale
       // pin can't stale the block or reach the workflow.
       tier: data.tierMode === "custom" ? data.tier : undefined,
-      weightMode: customWeights ? "custom" : "automatic",
+      weightMode: customWeights ? "custom" : "default",
       customWeights,
       // Ship the calibrated coefficients for the chosen family; the workflow picks the
       // tier row once it knows which signals the input actually carries.
@@ -252,19 +280,19 @@ export const platforma = BlockModelV3.create(dataModel)
   })
 
   // Distributions: a histogram over the composite score (the default) with re-bind to any
-  // feature that fed it. Uses the enriched `createPFrameForGraphs` so the chart still has the
-  // pool's compatible metadata/linker columns for grouping and labelling — the value picker
-  // is narrowed to just the score + features by the UI's `dataColumnPredicate`, keyed on
-  // `HISTOGRAM_VALUE_ANNOTATION` (stamped on those columns by the workflow). An explicit flag,
-  // not name-matching, so it can't be fooled by look-alike pool columns.
+  // available signal. `createPFrameForGraphs` enriches the block's own frame (score + used
+  // features) with every compatible pool column — so all available per-clonotype signals AND
+  // the metadata/linker columns for grouping are present without re-emitting any data. The
+  // value picker is narrowed to score + signals UI-side by `isHistogramValueColumn`.
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs?.resolve("tablePf")?.getPColumns();
     if (!pCols || pCols.length === 0) return undefined;
     return createPFrameForGraphs(ctx, pCols);
   })
 
-  // Column ids/specs of the histogram PFrame (label excluded), so the UI can default the
-  // chart to the score.
+  // Column ids/specs of the block's own frame (label excluded), so the UI can default the
+  // chart to the score. (The full pickable set is the enriched PFrame filtered by
+  // `isHistogramValueColumn`; this list only needs to carry the score for the default.)
   .output("histogramPfPcols", (ctx): PColumnIdAndSpec[] | undefined => {
     const pCols = ctx.outputs?.resolve("tablePf")?.getPColumns();
     if (!pCols) return undefined;
@@ -295,6 +323,7 @@ export const platforma = BlockModelV3.create(dataModel)
   .sections(() => [
     { type: "link" as const, href: "/" as const, label: "Main" },
     { type: "link" as const, href: "/distributions" as const, label: "Distributions" },
+    { type: "link" as const, href: "/scatterplot" as const, label: "Scatterplot" },
   ])
 
   .done();

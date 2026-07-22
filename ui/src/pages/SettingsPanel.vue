@@ -3,6 +3,7 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
+  SignalKind,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   defaultFeatureWeights,
@@ -10,7 +11,6 @@ import {
   FEATURE_SIGNAL,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
-  PlAccordionSection,
   PlAlert,
   PlBtnGhost,
   PlBtnGroup,
@@ -18,10 +18,10 @@ import {
   PlDropdownRef,
   PlMaskIcon24,
   PlNumberField,
+  PlRow,
 } from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
-import { SIGNAL_LABELS } from "../labels";
 
 const app = useApp();
 
@@ -38,12 +38,12 @@ const familyOptions: { value: PresetFamily; label: string }[] = [
 ];
 
 const tierModeOptions = [
-  { value: "automatic" as const, label: "Automatic" },
+  { value: "default" as const, label: "Default" },
   { value: "custom" as const, label: "Custom" },
 ];
 
 const weightModeOptions = [
-  { value: "automatic" as const, label: "Automatic" },
+  { value: "default" as const, label: "Default" },
   { value: "custom" as const, label: "Custom" },
 ];
 
@@ -102,7 +102,7 @@ const suggestions = computed(() => {
 
 // Switching to Custom seeds the pinned tier with the current auto pick — a user
 // gesture, not a watcher on an output, so it's hairpin-free.
-function setTierMode(mode: "automatic" | "custom") {
+function setTierMode(mode: "default" | "custom") {
   app.model.data.tierMode = mode;
   if (mode === "custom") {
     const reachable = availability.value?.reachableTiers ?? [];
@@ -132,6 +132,16 @@ const presetFeatures = computed<FeatureKey[]>(() =>
   FEATURE_ORDER.filter((f) => f in weightDefaults.value),
 );
 
+// Weight-editor rows: mutations together, abundance on its own, generation probability +
+// convergence sharing a row. Each row keeps its features in formula order (FEATURE_ORDER),
+// and empty rows (signals absent for the resolved tier) are dropped.
+const WEIGHT_ROWS: SignalKind[][] = [["mutations"], ["abundance"], ["pgen", "convergence"]];
+const featureRows = computed<FeatureKey[][]>(() =>
+  WEIGHT_ROWS.map((signals) =>
+    presetFeatures.value.filter((f) => signals.includes(FEATURE_SIGNAL[f])),
+  ).filter((row) => row.length > 0),
+);
+
 // Displayed value: the user's edit if present, else the preset default.
 function weightValue(feature: FeatureKey): number {
   return app.model.data.customWeights?.[feature] ?? weightDefaults.value[feature] ?? 0;
@@ -145,14 +155,6 @@ function setWeight(feature: FeatureKey, v: number | undefined) {
 // Reset discards custom edits — the display then falls back to the preset defaults.
 function resetWeights() {
   app.model.data.customWeights = {};
-}
-
-// True when this feature starts a new signal group (drives the group header).
-function startsGroup(index: number): boolean {
-  if (index === 0) return true;
-  return (
-    FEATURE_SIGNAL[presetFeatures.value[index]] !== FEATURE_SIGNAL[presetFeatures.value[index - 1]]
-  );
 }
 </script>
 
@@ -181,70 +183,76 @@ function startsGroup(index: number): boolean {
     <div v-for="s in suggestions" :key="s">{{ s }}</div>
   </PlAlert>
 
-  <PlAccordionSection label="Advanced settings">
-    <PlBtnGroup
-      :model-value="app.model.data.tierMode"
-      :options="tierModeOptions"
-      label="Scoring signals"
-      @update:model-value="setTierMode"
-    >
-      <template #tooltip>
-        Which sequence signals feed the score.<br />
-        <b>Automatic</b> — use every signal available upstream (recommended).<br />
-        <b>Custom</b> — choose a specific combination.
-      </template>
-    </PlBtnGroup>
-    <PlDropdown
-      v-if="app.model.data.tierMode === 'custom'"
-      v-model="app.model.data.tier"
-      :options="tierOptions"
-      label="Signals used"
-    >
-      <template #tooltip>
-        Each option builds on the <b>Base</b> (mutations + abundance, always from MiXCR); higher
-        options add more evidence when it is available upstream.
-      </template>
-    </PlDropdown>
-
-    <PlBtnGroup v-model="app.model.data.weightMode" :options="weightModeOptions" label="Weights">
-      <template #tooltip>
-        How much each feature contributes to the final score.<br />
-        <b>Automatic</b> — calibrated preset defaults (recommended).<br />
-        <b>Custom</b> — set the weights yourself.
-      </template>
-    </PlBtnGroup>
-    <template v-if="app.model.data.weightMode === 'custom' && presetFeatures.length > 0">
-      <template v-for="(f, i) in presetFeatures" :key="f">
-        <div v-if="startsGroup(i)" :class="$style.groupLabel">
-          {{ SIGNAL_LABELS[FEATURE_SIGNAL[f]] }}
-        </div>
-        <PlNumberField
-          :model-value="weightValue(f)"
-          :label="FEATURE_LABELS[f]"
-          :step="0.1"
-          @update:model-value="(v) => setWeight(f, v)"
-        >
-          <template #tooltip>{{ FEATURE_TOOLTIPS[f] }}</template>
-        </PlNumberField>
-      </template>
-      <PlBtnGhost @click.stop="resetWeights">
-        Reset to default
-        <template #append>
-          <PlMaskIcon24 name="reverse" />
-        </template>
-      </PlBtnGhost>
-      <PlAlert type="info">
-        Provisional v1 coefficients — Standard hand-set, Antigen-selected fitted on one dataset.
-      </PlAlert>
+  <PlBtnGroup v-model="app.model.data.weightMode" :options="weightModeOptions" label="Weights">
+    <template #tooltip>
+      How much each feature contributes to the final score.<br />
+      <b>Default</b> — calibrated preset defaults (recommended).<br />
+      <b>Custom</b> — set the weights yourself.
     </template>
-  </PlAccordionSection>
+  </PlBtnGroup>
+  <template v-if="app.model.data.weightMode === 'custom' && featureRows.length > 0">
+    <!-- Weight fields grouped into rows (mutations together, abundance alone, generation
+          probability + convergence sharing a row), in formula order. When a row has more than
+          one field the fields grow (flex-1) to fill the row's full width. -->
+    <div :class="$style.weightGroups">
+      <div v-for="(row, i) in featureRows" :key="i">
+        <PlRow>
+          <PlNumberField
+            v-for="f in row"
+            :key="f"
+            class="flex-1"
+            :model-value="weightValue(f)"
+            :label="FEATURE_LABELS[f]"
+            :step="0.1"
+            @update:model-value="(v) => setWeight(f, v)"
+          >
+            <template #tooltip>{{ FEATURE_TOOLTIPS[f] }}</template>
+          </PlNumberField>
+        </PlRow>
+      </div>
+    </div>
+    <PlBtnGhost :class="$style.resetBtn" @click.stop="resetWeights">
+      Reset to default
+      <template #append>
+        <PlMaskIcon24 name="reverse" />
+      </template>
+    </PlBtnGhost>
+  </template>
+
+  <PlBtnGroup
+    :model-value="app.model.data.tierMode"
+    :options="tierModeOptions"
+    label="Scoring signals"
+    @update:model-value="setTierMode"
+  >
+    <template #tooltip>
+      Which sequence signals feed the score.<br />
+      <b>Default</b> — use every signal available upstream (recommended).<br />
+      <b>Custom</b> — choose a specific combination.
+    </template>
+  </PlBtnGroup>
+  <PlDropdown
+    v-if="app.model.data.tierMode === 'custom'"
+    v-model="app.model.data.tier"
+    :options="tierOptions"
+    label="Signals used"
+  >
+    <template #tooltip>
+      Each option builds on the <b>Base</b> (mutations + abundance, always from MiXCR); higher
+      options add more evidence when it is available upstream.
+    </template>
+  </PlDropdown>
 </template>
 
 <style module>
-.groupLabel {
-  font-weight: 600;
-  font-size: 13px;
-  margin-top: 8px;
-  color: var(--txt-01, #111827);
+/* Rows of weight fields, stacked vertically. */
+.weightGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Tighten the sections's 24px flex gap between the last weight field and Reset. */
+.resetBtn {
+  margin-top: -16px;
 }
 </style>

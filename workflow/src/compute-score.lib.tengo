@@ -27,7 +27,7 @@ GRP := "__grp"
  *   { header: string, spec: object, data: object, transform: string, coef: number }
  *   - header    : unique in-frame column name for this feature contribution.
  *   - spec/data : the source PColumn (keyed on the clonotype-key axis).
- *   - transform : "identity" | "log1p" | "faststar" — the raw->analysis mapping.
+ *   - transform : "identity" | "log1p" — the raw->analysis mapping.
  *   - coef      : signed coefficient applied to this feature's percentile rank
  *                 (already scaled by 0.20 for light-chain siblings).
  * @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
@@ -54,9 +54,6 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
 		if c.transform == "log1p" {
 			// Abundance (e.g. unique cell count) is compressed by log1p.
 			e = pt.col(c.header).plus(pt.lit(1)).log()
-		} else if c.transform == "faststar" {
-			// Convergence "fastStar" is a String hit flag — cast to 1/0.
-			e = pt.when(pt.col(c.header).eq("Hit")).then(pt.lit(1)).otherwise(pt.lit(0))
 		}
 		selectExprs = append(selectExprs, e.alias(c.header))
 	}

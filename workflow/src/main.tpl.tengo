@@ -35,18 +35,13 @@ SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
 SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
 SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
 NEG_LOG_PGEN := "pl7.app/vdj/negLog10GenerationProbability"
-CONV_PREFIX := "pl7.app/vdj/convergence/"
+CONV_NBFREQ := "pl7.app/vdj/convergence/nbFreq"
 ABUNDANCE_ANN := "pl7.app/isAbundance"
 ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
 ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
 SC_CHAIN_DOMAIN := "pl7.app/vdj/scClonotypeChain"
 CHAIN_DOMAIN := "pl7.app/vdj/chain"
 RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
-
-// Mirror of model HISTOGRAM_VALUE_ANNOTATION — stamped on the score + feature columns of the
-// display frame so the Distributions histogram (via dataColumnPredicate) offers only these
-// as selectable values, while the enriched PFrame keeps pool metadata for grouping/labels.
-HISTOGRAM_VALUE_ANN := "pl7.app/vdj/repertoireScore/distributionValue"
 
 // The feature->signal map and the canonical feature order come from args
 // (args.featureSignal / args.featureOrder) — single source of truth in the model's
@@ -58,7 +53,7 @@ SLOT_ORDER := ["A", "B", ""]
 TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
 
 // Classify one upstream column into { fk, transform } or undefined.
-//   transform: "identity" | "log1p" | "faststar" — raw->analysis mapping applied in pt.
+//   transform: "identity" | "log1p" — raw->analysis mapping applied in pt.
 // abundanceUnit is the dataset's PRIMARY abundance unit (read off the input anchor:
 // "cells" single-cell, "reads"/"molecules" bulk) — used to pin the abundance feature.
 classify := func(col, abundanceUnit) {
@@ -95,12 +90,9 @@ classify := func(col, abundanceUnit) {
 			return { fk: "logCells", transform: "log1p" }
 		}
 	}
-	if text.has_prefix(name, CONV_PREFIX) {
-		// Convergence maps to the fastStar coefficient slot. Prefer a numeric
-		// per-clonotype convergence score when one is present; otherwise fall back to
-		// the String "fastStar" hit flag (Hit/Not hit -> 1/0).
-		isString := col.spec.valueType == "String"
-		return { fk: "fastStar", transform: isString ? "faststar" : "identity" }
+	if name == CONV_NBFREQ {
+		// Neighbour frequency feeds the fastStar coefficient slot, used as-is (numeric).
+		return { fk: "fastStar", transform: "identity" }
 	}
 	return undefined
 }
@@ -117,25 +109,6 @@ slotOf := func(col, isSingleCell) {
 		return "A"
 	}
 	return dom[SC_CHAIN_DOMAIN]
-}
-
-// Copy `spec` with the distribution-value flag added — marks the score + feature columns so
-// the Distributions histogram can offer only them as selectable values (see model
-// HISTOGRAM_VALUE_ANNOTATION). Applied only to the display frame, never to the exported score.
-withDistributionFlag := func(spec) {
-	ann := {}
-	if !is_undefined(spec.annotations) {
-		for k, v in spec.annotations {
-			ann[k] = v
-		}
-	}
-	ann[HISTOGRAM_VALUE_ANN] = "true"
-	out := {}
-	for k, v in spec {
-		out[k] = v
-	}
-	out.annotations = ann
-	return out
 }
 
 wf.prepare(func(args) {
@@ -184,15 +157,9 @@ wf.body(func(args) {
 		if is_undefined(slots[slot]) {
 			slots[slot] = {}
 		}
-		existing := slots[slot][cl.fk]
-		if cl.fk == "fastStar" && !is_undefined(existing) {
-			// Numeric convergence score wins over the String fastStar flag.
-			if existing.transform == "faststar" && cl.transform == "identity" {
-				slots[slot][cl.fk] = { col: col, transform: cl.transform }
-			}
-		} else {
-			slots[slot][cl.fk] = { col: col, transform: cl.transform }
-		}
+		// Each feature key maps to exactly one column per slot (features are matched by
+		// unique name; abundance to the single primary total), so a plain assignment suffices.
+		slots[slot][cl.fk] = { col: col, transform: cl.transform }
 	}
 
 	// --- Present signals -> effective tier. ---
@@ -310,6 +277,7 @@ wf.body(func(args) {
 			"pl7.app/label": "Repertoire score",
 			"pl7.app/description": args.presetFamily + " family, tier " + tier + " (" + variant + ")",
 			"pl7.app/score/defaultCutoff": "0.8",
+			"pl7.app/format": ".2f",
 			"pl7.app/table/orderPriority": "95000"
 		}
 	}
@@ -339,15 +307,15 @@ wf.body(func(args) {
 	// were discovered on the clonotype axis, and the score is emitted on it), so the
 	// table is naturally one row per clonotype. The model renders these columns as-is
 	// (no pool discovery), so the displayed set is precisely "score + used metrics".
-	// The score + feature columns carry the distribution-value flag (for the histogram value
-	// picker); the Clone Id label does not — it's an identifier, not a distribution.
+	// The Distributions histogram enriches this frame from the pool (model side) and picks
+	// plottable signals via a spec predicate — no extra frame or per-column flag needed here.
 	tableBuilder := pframes.pFrameBuilder()
 	if !is_undefined(cloneLabelCol) {
 		tableBuilder.add("cloneId", cloneLabelCol.spec, cloneLabelCol.data)
 	}
-	tableBuilder.add("score", withDistributionFlag(scoreSpecTraced), scoreCol.data)
+	tableBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	for c in inputCols {
-		tableBuilder.add(c.header, withDistributionFlag(c.spec), c.data)
+		tableBuilder.add(c.header, c.spec, c.data)
 	}
 	tableFrame := tableBuilder.build()
 

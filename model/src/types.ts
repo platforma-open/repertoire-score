@@ -16,27 +16,29 @@ export type PresetFamily = "standard" | "antigen-selected";
 export type SelectableTier = "1" | "2a" | "2b" | "3";
 
 /** Weight-editor mode. */
-export type WeightMode = "automatic" | "custom";
+export type WeightMode = "default" | "custom";
 
 /** Unified block data (UI-editable state). */
 export type BlockData = {
   inputAnchor?: PlRef;
   presetFamily: PresetFamily;
   // Scoring-signals control:
-  //   "automatic" — highest reachable tier; auto-upgrades as upstream signals appear.
+  //   "default" — highest reachable tier; auto-upgrades as upstream signals appear.
   //   "custom"    — pin `tier` explicitly.
-  tierMode: "automatic" | "custom";
+  tierMode: "default" | "custom";
   tier?: SelectableTier;
-  // Weight editor: "automatic" uses the calibrated preset coefficients; "custom" uses
+  // Weight editor: "default" uses the calibrated preset coefficients; "custom" uses
   // `customWeights`, seeded from the preset defaults.
   weightMode: WeightMode;
   // Per-feature custom weights. Only edited features are stored; the rest fall back to the
-  // preset default. Persists across preset/custom toggles; Reset clears it.
+  // preset default. Persists across default/custom toggles; Reset clears it.
   customWeights?: Partial<Record<FeatureKey, number>>;
   // View state for the Main-page results table (UI-only; never projected to args).
   tableState: PlDataTableStateV2;
   // View state for the Distributions histogram (score + per-feature). UI-only.
   graphStateHistogram: GraphMakerState;
+  // View state for the Comparison scatterplot (any signal vs any signal). UI-only.
+  graphStateScatter: GraphMakerState;
 };
 
 /** Workflow args projected from `data`. The workflow resolves the effective tier from
@@ -44,7 +46,7 @@ export type BlockData = {
 export type BlockArgs = {
   inputAnchor: PlRef;
   presetFamily: PresetFamily;
-  tierMode: "automatic" | "custom";
+  tierMode: "default" | "custom";
   tier?: SelectableTier;
   weightMode: WeightMode;
   customWeights?: Partial<Record<FeatureKey, number>>;
@@ -87,7 +89,7 @@ export type PresetTier = "none" | SelectableTier;
 /** Reactive read-out of what the composite could use for the selected dataset. */
 export type FeatureAvailability = {
   signals: SignalKind[];
-  /** Highest reachable tier given the present signals (what "Automatic" selects). */
+  /** Highest reachable tier given the present signals (what "Default" selects). */
   tier: PresetTier;
   /** Tiers the user may pin in Custom mode — only those whose signals are all present. */
   reachableTiers: SelectableTier[];
