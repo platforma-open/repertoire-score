@@ -101,3 +101,29 @@ export type FeatureAvailability = {
   hasPgen: boolean;
   hasConvergence: boolean;
 };
+
+/** One column's entry in the score-provenance log (`scoreLog` output). */
+export type ScoreLogColumn = {
+  /** Internal composite feature key. */
+  feature: FeatureKey;
+  /** Chain slot: "A" (heavy/primary), "B" (light), "x" (bulk / chain-agnostic). */
+  chain: "A" | "B" | "x";
+  /** Source PColumn name this feature was matched from. */
+  sourceColumn: string;
+  /** Raw->analysis mapping applied before ranking. */
+  transform: "identity" | "log1p" | "hitFlag";
+  /** Coefficient actually applied (light-chain siblings already scaled by 0.20). */
+  coefficient: number;
+};
+
+/**
+ * Diagnostic manifest of the weights and columns the composite score used, for
+ * double-checking. Emitted by the workflow as the `scoreLog` output.
+ */
+export type ScoreLog = {
+  preset: string;
+  tier: string;
+  family: string;
+  weightMode: string;
+  columns: ScoreLogColumn[];
+};

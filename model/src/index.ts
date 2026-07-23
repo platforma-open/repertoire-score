@@ -15,18 +15,19 @@ import {
   createPlDataTableV3,
   DataModelBuilder,
 } from "@platforma-sdk/model";
+import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 import type {
   BlockArgs,
   BlockData,
   FeatureAvailability,
   FeatureKey,
+  ScoreLog,
   SelectableTier,
   SignalKind,
 } from "./types";
-import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 
-export * from "./types";
 export * from "./presets";
+export * from "./types";
 
 // The composite score column emitted by the workflow.
 export const REPERTOIRE_SCORE_COLUMN = "pl7.app/vdj/repertoireScore";
@@ -60,16 +61,10 @@ const MUTATION_COLUMN_NAMES = new Set([
   NT_MUTATIONS_COLUMN,
   "pl7.app/vdj/sequence/fractionCDRMutations",
 ]);
-// Generation probability: the score consumes -log10(Pgen). The raw `generationProbability`
-// is deliberately NOT recognized — the score needs the -log10 form and the workflow only
-// feeds that one (workflow NEG_LOG_PGEN); recognizing the raw would advertise a Pgen tier
-// the workflow then can't classify.
+// Generation probability: the score consumes -log10(Pgen).
 const PGEN_COLUMN_NAME = "pl7.app/vdj/negLog10GenerationProbability";
 // Convergence signal = the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit").
-// The composite consumes this boolean — cast to 0/1 and percentile-ranked in
-// the workflow. Matched by exact name so the raw neighbour count (convergence/neighbours) and
-// the continuous neighbour frequency (convergence/nbFreq) are not treated as composite features.
-const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
+const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/starHit";
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
@@ -94,9 +89,7 @@ function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
 
 /**
  * Whether a column should be offered as a value in the plots — the composite score plus every
- * recognized per-clonotype signal present (used by the current preset or not). Applied UI-side
- * via GraphMaker's `dataColumnPredicate`. Single-axis excludes the per-(sample,clonotype) copies
- * the enrichment drags in; the score / classifyFeature check excludes non-signal pool columns.
+ * recognized per-clonotype signal present (used by the current preset or not).
  */
 export function isPlottableColumn(spec: PColumnSpec): boolean {
   if (spec.axesSpec.length !== 1) return false;
@@ -106,14 +99,6 @@ export function isPlottableColumn(spec: PColumnSpec): boolean {
 /**
  * Detect which composite signal families are present for the selected dataset, and the
  * implied preset tier. Pure spec read over the result pool — no Run required.
- *
- * Scope: per-clonotype columns only (anchor axis idx 1) — the SAME scope the workflow
- * discovers features on (`wf.prepare` `addMulti({axes:[{anchor:"main",idx:1}]})`). Every
- * feature the score consumes lives on the clonotype axis: SHM mutations, the per-clonotype
- * abundance total (Supporting Cells / Reads / UMIs), -log10(Pgen), and convergence. The raw
- * per-(sample,clonotype) abundance (e.g. cell-count) is 2-axis and NOT used — detecting on a
- * wider scope than the workflow would advertise a signal it can't feed. (This is unlike
- * clonotype-convergence, where the relevant columns are split across two axis frames.)
  */
 function detectFeatures<A, U>(
   ctx: RenderCtxBase<A, U>,
@@ -250,21 +235,11 @@ export const platforma = BlockModelV3.create(dataModel)
   )
 
   // Reactive feature/tier detection for the selected dataset (no Run needed).
-  // Retentive: while the block reruns, the upstream enrichment columns (Pgen /
-  // Convergence) transiently drop out of the anchored pool discovery, which would
-  // otherwise shrink `reachableTiers` to just the base and invalidate a higher pinned
-  // tier in the Settings "Signals used" dropdown. Retentive rendering holds the last
-  // stable value until a new stable one is ready, so the Settings controls stay put.
   .retentiveOutput("featureAvailability", (ctx) =>
     ctx.data.inputAnchor ? detectFeatures(ctx, ctx.data.inputAnchor) : undefined,
   )
 
   // Results table: exactly Clone Id + this block's score + the metrics that fed it.
-  // We render the workflow's own curated `tablePf` frame (built from precisely the
-  // feature columns the score used, all on the clonotype axis) rather than discovering
-  // from the pool — so the table shows only the used metrics, one row per clonotype.
-  // (Pool discovery from the dataset anchor would pull the whole clonotype table and
-  // inherit the anchor's per-sample axis; this avoids both.)
   .outputWithStatus("scoreTable", (ctx) => {
     const acc = ctx.outputs?.resolve({
       field: "tablePf",
@@ -308,6 +283,12 @@ export const platforma = BlockModelV3.create(dataModel)
     if (plottable.length === 0) return undefined;
     return plottable.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
+
+  // Diagnostic manifest of the per-column weights actually applied (post light-chain
+  // scaling), each column's chain, and its source column — for double-checking the score.
+  .output("scoreLog", (ctx): ScoreLog | undefined =>
+    ctx.outputs?.resolve("scoreLog")?.getDataAsJsonOrUndefined<ScoreLog>(),
+  )
 
   // This block enriches the clonotype dataset it scores, so consumers that pull
   // enrichments (e.g. lead selection) auto-discover the score.

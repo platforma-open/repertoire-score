@@ -19,7 +19,7 @@ import {
   PlSectionSeparator,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
-import { computed, watchEffect } from "vue";
+import { computed, ref, watchEffect } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -46,7 +46,7 @@ const weightModeOptions = [
   { value: "custom" as const, label: "Custom" },
 ];
 
-// Biologist-facing labels — by signals, not tier ids. "Base" = the mutations + abundance
+// User-facing labels — by signals, not tier ids. "Base" = the mutations + abundance
 // MiXCR floor that every tier includes; higher tiers add signals on top.
 const TIER_LABELS: Record<SelectableTier, string> = {
   "1": "Base: mutations + abundance",
@@ -84,20 +84,31 @@ const tierOptions = computed(() =>
   })),
 );
 
-// Optional signals absent from the pool. Stated neutrally — what's missing + its
-// source block — with no "add the block" imperative, so the same message is correct
-// whether the block simply isn't in the project OR is present but declined to emit
-// for this input (e.g. unsupported species). The user reads the source and runs it
+// Optional signals absent from the pool -> the upstream block(s) that would supply them.
+// Stated as a suggestion (a better score is possible), not an error, and neutrally: the same
+// message is correct whether the block simply isn't in the project OR is present but declined
+// to emit for this input (e.g. unsupported species). The user reads the block name and runs it
 // if their data allows. Only shown once the base (MiXCR) is present.
-const suggestions = computed(() => {
+const missingSignalBlocks = computed<string[]>(() => {
   const a = availability.value;
   if (!a || !a.hasMixcr) return [];
   const out: string[] = [];
-  if (!a.hasPgen)
-    out.push("Generation probability not included. Source: Generation Probability block.");
-  if (!a.hasConvergence) out.push("Convergence not included. Source: Convergence Score block.");
+  if (!a.hasPgen) out.push("Generation Probability");
+  if (!a.hasConvergence) out.push("Convergence Score");
   return out;
 });
+
+// The suggestions banner is dismissible. Keep it dismissed only for the exact set shown, so it
+// reappears if a different signal goes missing (e.g. after switching to another dataset).
+const dismissedSuggestions = ref<string | null>(null);
+const showSuggestions = computed(
+  () =>
+    missingSignalBlocks.value.length > 0 &&
+    dismissedSuggestions.value !== missingSignalBlocks.value.join("|"),
+);
+function dismissSuggestions() {
+  dismissedSuggestions.value = missingSignalBlocks.value.join("|");
+}
 
 // Switching to Custom seeds the pinned tier with the current auto pick — a user
 // gesture, not a watcher on an output, so it's hairpin-free.
@@ -121,11 +132,7 @@ const resolvedTier = computed<SelectableTier | undefined>(() => {
   return a.tier;
 });
 
-// Keep the auto block-label default in sync: "<dataset> · <scoring formula variables>". Stored
-// in `data.defaultBlockLabel` (a plain data field the model's `.subtitle()` can read — the result
-// pool isn't available in that render pass) and shown as the grey placeholder in the label field.
-// `customBlockLabel` (the user's own label) stays empty until they type, so the default renders
-// grey, not as a black stored value — matching the enrichment block.
+// Keep the auto block-label default in sync: "<dataset> · <scoring formula variables>".
 watchEffect(() => {
   const ref = app.model.data.inputAnchor;
   const dataset = ref
@@ -215,9 +222,11 @@ function onCoefInput(feature: FeatureKey, event: Event) {
     </template>
   </PlDropdown>
 
-  <PlAlert v-if="suggestions.length > 0" type="info" :closeable="true">
-    <template #title>Signals not included</template>
-    <div v-for="s in suggestions" :key="s">{{ s }}</div>
+  <PlAlert v-if="showSuggestions" type="info" closeable @update:model-value="dismissSuggestions">
+    Some variables are missing. Run above the following block(s) to generate a better score:
+    <ul :class="$style.suggestionList">
+      <li v-for="b in missingSignalBlocks" :key="b">{{ b }}</li>
+    </ul>
   </PlAlert>
 
   <PlSectionSeparator>Score computation</PlSectionSeparator>
@@ -360,5 +369,10 @@ function onCoefInput(feature: FeatureKey, event: Event) {
 /* Tighten the section's 24px flex gap above the Reset button. */
 .resetBtn {
   margin-top: -16px;
+}
+/* Missing-signal suggestion list inside the info banner. */
+.suggestionList {
+  margin: 4px 0 0;
+  padding-left: 18px;
 }
 </style>

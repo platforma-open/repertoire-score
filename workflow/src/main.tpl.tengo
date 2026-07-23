@@ -21,6 +21,9 @@ wf := import("@platforma-sdk/workflow-tengo:workflow")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 ll := import("@platforma-sdk/workflow-tengo:ll")
+smart := import("@platforma-sdk/workflow-tengo:smart")
+constants := import("@platforma-sdk/workflow-tengo:constants")
+canonical := import("@platforma-sdk/workflow-tengo:canonical")
 
 computeScore := import(":compute-score")
 
@@ -34,7 +37,7 @@ SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
 SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
 SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
 NEG_LOG_PGEN := "pl7.app/vdj/negLog10GenerationProbability"
-CONV_FASTSTAR := "pl7.app/vdj/convergence/fastStar"
+CONV_FASTSTAR := "pl7.app/vdj/convergence/starHit"
 ABUNDANCE_ANN := "pl7.app/isAbundance"
 ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
 ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
@@ -104,8 +107,14 @@ slotOf := func(col, isSingleCell) {
 	if is_undefined(dom) {
 		return "A"
 	}
-	if !is_undefined(dom[SC_CHAIN_DOMAIN]) {
-		return dom[SC_CHAIN_DOMAIN]
+	scChain := dom[SC_CHAIN_DOMAIN]
+	if !is_undefined(scChain) {
+		// A per-chain SC column MUST resolve to a known slot — refuse to silently drop a
+		// column carrying an unexpected chain value (downstream only walks SLOT_ORDER).
+		ll.assert(scChain == "A" || scChain == "B",
+			"repertoire-score: column %s carries unexpected %s=%s (expected \"A\" or \"B\")",
+			col.spec.name, SC_CHAIN_DOMAIN, scChain)
+		return scChain
 	}
 	// --- TEMPORARY: remove once clonotype-convergence emits scClonotypeChain for SC. ---
 	// The convergence block currently stamps its single-cell per-chain columns with the
@@ -115,11 +124,18 @@ slotOf := func(col, isSingleCell) {
 	// Map the bulk chain domain to the SC slot as a stopgap. When the upstream block is
 	// fixed, delete this branch and BULK_CHAIN_TO_SLOT — the scClonotypeChain branch covers it.
 	BULK_CHAIN_TO_SLOT := { "IGHeavy": "A", "IGLight": "B", "IGKappa": "B", "IGLambda": "B" }
-	bulkSlot := BULK_CHAIN_TO_SLOT[dom[CHAIN_DOMAIN]]
-	if !is_undefined(bulkSlot) {
+	chain := dom[CHAIN_DOMAIN]
+	if !is_undefined(chain) {
+		// The column declares a chain we can't map to a slot — fail rather than mis-slot it
+		// into the primary "A" and risk a silent collision.
+		bulkSlot := BULK_CHAIN_TO_SLOT[chain]
+		ll.assert(!is_undefined(bulkSlot),
+			"repertoire-score: single-cell column %s carries an unmapped %s=%s — cannot assign a slot",
+			col.spec.name, CHAIN_DOMAIN, chain)
 		return bulkSlot
 	}
 	// --- end TEMPORARY ---
+	// No chain domain at all -> chain-agnostic column (combined mutations, abundance total).
 	return "A"
 }
 
@@ -153,7 +169,14 @@ wf.body(func(args) {
 			slots[slot] = {}
 		}
 		// Each feature key maps to exactly one column per slot (features are matched by
-		// unique name; abundance to the single primary total), so a plain assignment suffices.
+		// unique name; abundance to the single primary total). A collision means an upstream
+		// block emitted duplicate or ambiguous per-chain columns (e.g. two abundance totals,
+		// or heavy+light sharing a slot) — fail loudly rather than silently keep the last.
+		existing := slots[slot][cl.fk]
+		if !is_undefined(existing) {
+			ll.panic("repertoire-score: two columns map to feature %s in slot %s: %s and %s — refusing to silently pick one",
+				cl.fk, slot, existing.col.spec.name, col.spec.name)
+		}
 		slots[slot][cl.fk] = { col: col, transform: cl.transform }
 	}
 
@@ -212,6 +235,9 @@ wf.body(func(args) {
 	// Heavy (A) / bulk get the raw coefficient; light-chain siblings (B) get 0.20x
 	// (sign preserved). Features absent from the resolved preset are skipped.
 	inputCols := []
+	// Parallel per-column diagnostic manifest (feature, chain, source column, transform,
+	// effective coefficient) emitted as the scoreLog output for double-checking.
+	scoreLog := []
 	for slot in SLOT_ORDER {
 		fkMap := slots[slot]
 		if is_undefined(fkMap) {
@@ -237,6 +263,13 @@ wf.body(func(args) {
 				data: entry.col.data,
 				transform: entry.transform,
 				coef: effCoef
+			})
+			scoreLog = append(scoreLog, {
+				feature: fk,
+				chain: slotTag,
+				sourceColumn: entry.col.spec.name,
+				transform: entry.transform,
+				coefficient: effCoef
 			})
 		}
 	}
@@ -297,7 +330,7 @@ wf.body(func(args) {
 	frameBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	scoreFrame := frameBuilder.build()
 
-	// Block-private results table (Main page): score + exactly the metrics that fed the
+	// Block output results table (Main page): score + exactly the metrics that fed the
 	// score — nothing else. Every column is per-clonotype (the features were discovered on
 	// the clonotype axis, and the score is emitted on it), so the table is naturally one row
 	// per clonotype.
@@ -310,9 +343,22 @@ wf.body(func(args) {
 	}
 	tableFrame := tableBuilder.build()
 
+	// Diagnostic manifest: the per-column weights actually applied (post light-chain
+	// scaling) with each column's chain and source, for double-checking from the model.
+	// canonical.encode gives sorted-key, deterministic bytes so the resource CID is stable
+	// across runs — plain json.encode would vary map key order and churn the CID.
+	scoreLogRes := smart.createValueResource(constants.RTYPE_JSON, canonical.encode({
+		preset: presetId,
+		tier: tier,
+		family: args.presetFamily,
+		weightMode: args.weightMode,
+		columns: scoreLog
+	}))
+
 	return {
 		outputs: {
-			tablePf: pframes.exportFrame(tableFrame)
+			tablePf: pframes.exportFrame(tableFrame),
+			scoreLog: scoreLogRes
 		},
 		exports: {
 			score: scoreFrame

@@ -29,7 +29,7 @@ export const FEATURE_SIGNAL: Record<FeatureKey, SignalKind> = {
  * - Standard family: hand-set, non-negative, sum-to-1 (biology-informed direction).
  * - Antigen-selected family: fitted logistic regression on percentile-ranked features — signed.
  *
- * Both are v1 provisional (fitted on a single Chirichella dataset). The feature *set* differs
+ * Fitted on a single Chirichella dataset. The feature *set* differs
  * per (family, tier): e.g. standard-mutations reproduces the legacy in-vivo formula.
  */
 export const PRESET_COEFFICIENTS: Record<
