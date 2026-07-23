@@ -1,8 +1,9 @@
 // Composite repertoire score — the pure-pt (Polars) computation.
 //
 // One score per clonotype, computed over a single global window (the whole input).
-// The recipe: median-impute each feature, average-rank it, take the coefficient-
-// weighted sum of the ranks, then re-rank that composite and normalise to (0, 1].
+// The recipe: null-fill each feature (median for continuous features, 0 for hit flags),
+// average-rank it, take the coefficient-weighted sum of the ranks, then re-rank that
+// composite and normalise to (0, 1].
 // The final re-rank is what pins the output to [0, 1] regardless of the (signed)
 // coefficient magnitudes — so signed antigen-selected coefficients need no clamping.
 //
@@ -55,8 +56,9 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
 			// Abundance (e.g. unique cell count) is compressed by log1p.
 			e = pt.col(c.header).plus(pt.lit(1)).log()
 		} else if c.transform == "hitFlag" {
-			// fast-STAR "Hit"/"Not hit" flag -> 1.0 / 0.0. `.eq` yields null on null input
-			// and the cast preserves it, so genuine missings still reach median-imputation.
+			// Convergence "Hit"/"Not hit" flag -> 1.0 / 0.0. `.eq` yields null on null input
+			// and the cast preserves it; that null is filled with 0 (NOT the median) below,
+			// since an absent convergence result means "no hit", not "average convergence".
 			e = pt.col(c.header).eq("Hit").cast("Double")
 		}
 		selectExprs = append(selectExprs, e.alias(c.header))
@@ -66,11 +68,18 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
 	// Single global group for every subsequent window op.
 	df = df.withColumns(pt.lit(1).alias(GRP))
 
-	// Median-impute each feature within the global window.
+	// Null-fill each feature within the global window. Continuous features get the median
+	// (a neutral, mid-rank stand-in for a missing measurement). A hit-flag feature instead
+	// gets 0: a null there means the clonotype was filtered upstream before convergence could
+	// be called.
 	imputeExprs := []
 	for c in inputCols {
+		fill := pt.col(c.header).median().over(GRP)
+		if c.transform == "hitFlag" {
+			fill = pt.lit(0)
+		}
 		imputeExprs = append(imputeExprs,
-			pt.col(c.header).fillNull(pt.col(c.header).median().over(GRP)).alias(c.header))
+			pt.col(c.header).fillNull(fill).alias(c.header))
 	}
 	df = df.withColumns(imputeExprs...)
 
