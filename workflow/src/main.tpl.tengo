@@ -101,10 +101,26 @@ slotOf := func(col, isSingleCell) {
 		return ""
 	}
 	dom := col.spec.domain
-	if is_undefined(dom) || is_undefined(dom[SC_CHAIN_DOMAIN]) {
+	if is_undefined(dom) {
 		return "A"
 	}
-	return dom[SC_CHAIN_DOMAIN]
+	if !is_undefined(dom[SC_CHAIN_DOMAIN]) {
+		return dom[SC_CHAIN_DOMAIN]
+	}
+	// --- TEMPORARY: remove once clonotype-convergence emits scClonotypeChain for SC. ---
+	// The convergence block currently stamps its single-cell per-chain columns with the
+	// bulk-style `pl7.app/vdj/chain` (IGHeavy/IGLight/...) instead of `scClonotypeChain`
+	// (A/B). Without this, both heavy and light convergence miss the check above, collapse
+	// to the "A" fallback, collide (last-write-wins), and the heavy signal is silently lost.
+	// Map the bulk chain domain to the SC slot as a stopgap. When the upstream block is
+	// fixed, delete this branch and BULK_CHAIN_TO_SLOT — the scClonotypeChain branch covers it.
+	BULK_CHAIN_TO_SLOT := { "IGHeavy": "A", "IGLight": "B", "IGKappa": "B", "IGLambda": "B" }
+	bulkSlot := BULK_CHAIN_TO_SLOT[dom[CHAIN_DOMAIN]]
+	if !is_undefined(bulkSlot) {
+		return bulkSlot
+	}
+	// --- end TEMPORARY ---
+	return "A"
 }
 
 wf.prepare(func(args) {
