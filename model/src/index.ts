@@ -65,17 +65,18 @@ const MUTATION_COLUMN_NAMES = new Set([
 // feeds that one (workflow NEG_LOG_PGEN); recognizing the raw would advertise a Pgen tier
 // the workflow then can't classify.
 const PGEN_COLUMN_NAME = "pl7.app/vdj/negLog10GenerationProbability";
-// Convergence signal = the neighbour frequency (the continuous fast-STAR value). Matched by
-// exact name so the raw neighbour count (convergence/neighbours) and the Hit/Not-hit flag
-// (convergence/fastStar) are not treated as composite features.
-const CONVERGENCE_NBFREQ = "pl7.app/vdj/convergence/nbFreq";
+// Convergence signal = the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit").
+// The composite consumes this boolean — cast to 0/1 and percentile-ranked in
+// the workflow. Matched by exact name so the raw neighbour count (convergence/neighbours) and
+// the continuous neighbour frequency (convergence/nbFreq) are not treated as composite features.
+const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
   const name = spec.name;
   const ann = spec.annotations;
   if (name === PGEN_COLUMN_NAME) return "pgen";
-  if (name === CONVERGENCE_NBFREQ) return "convergence";
+  if (name === CONVERGENCE_FASTSTAR) return "convergence";
   // Abundance total only — mirror the workflow's rule: raw count (not a normalized fraction),
   // and a clonal-size unit (cells / reads / molecules), never `samples` (sample-count is
   // clonotype prevalence, not abundance). Keeps sample-count and fractions out of both tier

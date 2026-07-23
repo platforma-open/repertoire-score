@@ -21,7 +21,6 @@ wf := import("@platforma-sdk/workflow-tengo:workflow")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 ll := import("@platforma-sdk/workflow-tengo:ll")
-text := import("text")
 
 computeScore := import(":compute-score")
 
@@ -35,7 +34,7 @@ SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
 SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
 SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
 NEG_LOG_PGEN := "pl7.app/vdj/negLog10GenerationProbability"
-CONV_NBFREQ := "pl7.app/vdj/convergence/nbFreq"
+CONV_FASTSTAR := "pl7.app/vdj/convergence/fastStar"
 ABUNDANCE_ANN := "pl7.app/isAbundance"
 ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
 ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
@@ -53,10 +52,8 @@ SLOT_ORDER := ["A", "B", ""]
 TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
 
 // Classify one upstream column into { fk, transform } or undefined.
-//   transform: "identity" | "log1p" — raw->analysis mapping applied in pt.
-// abundanceUnit is the dataset's PRIMARY abundance unit (read off the input anchor:
-// "cells" single-cell, "reads"/"molecules" bulk) — used to pin the abundance feature.
-classify := func(col, abundanceUnit) {
+//   transform: "identity" | "log1p" | "hitFlag" — analysis mapping applied in pt.
+classify := func(col) {
 	name := col.spec.name
 	if name == SEQ_CDR_FRAC {
 		return { fk: "cdrMutationFraction", transform: "identity" }
@@ -77,22 +74,21 @@ classify := func(col, abundanceUnit) {
 	ann := col.spec.annotations
 	if !is_undefined(ann) && ann[ABUNDANCE_ANN] == "true" {
 		// The abundance feature is the PRIMARY clonal-size total: log1p(Supporting Cells)
-		// for single-cell; the bulk analogue is Supporting Reads / Supporting UMIs.
-		// MiXCR marks several columns isAbundance; select only the right one:
+		// for single-cell; the bulk analogue is Supporting Reads / Supporting UMIs. MiXCR
+		// marks several columns isAbundance, but on the per-clonotype scope it emits exactly
+		// ONE raw, non-"samples" total per modality (reads / molecules / cells — the
+		// non-primary totals are dropped), so two annotation checks pin it uniquely:
 		//   - never "samples" (sample-count is clonotype prevalence, NOT abundance);
-		//   - never normalized fractions (we want the raw count for log1p);
-		//   - match the dataset's primary abundance unit when known, so bulk picks the
-		//     read/molecule total and single-cell picks the cell total.
-		unit := ann[ABUNDANCE_UNIT_ANN]
-		normalized := ann[ABUNDANCE_NORM_ANN]
-		unitOk := is_undefined(abundanceUnit) ? unit != "samples" : unit == abundanceUnit
-		if normalized != "true" && unitOk {
+		//   - never normalized fractions (we want the raw count for log1p).
+		// This mirrors the model's classifyFeature exactly (index.ts).
+		if ann[ABUNDANCE_NORM_ANN] != "true" && ann[ABUNDANCE_UNIT_ANN] != "samples" {
 			return { fk: "logCells", transform: "log1p" }
 		}
 	}
-	if name == CONV_NBFREQ {
-		// Neighbour frequency feeds the fastStar coefficient slot, used as-is (numeric).
-		return { fk: "fastStar", transform: "identity" }
+	if name == CONV_FASTSTAR {
+		// The fast-STAR "Hit"/"Not hit" flag feeds the fastStar coefficient slot; cast to
+		// 0/1 before percentile-ranking.
+		return { fk: "fastStar", transform: "hitFlag" }
 	}
 	return undefined
 }
@@ -129,27 +125,10 @@ wf.body(func(args) {
 	keyAxisSpec := datasetSpec.axesSpec[1]
 	isSingleCell := keyAxisSpec.name == "pl7.app/vdj/scClonotypeKey"
 
-	// The input anchor IS the dataset's primary abundance column (isAnchor/isPrimary), so
-	// its unit names the abundance the score should use — "cells" (single-cell), "reads" or
-	// "molecules" (bulk). The abundance feature is then pinned to the per-clonotype total of
-	// that same unit (Supporting Cells / Reads / UMIs), never sample-count.
-	abundanceUnit := is_undefined(datasetSpec.annotations) ? undefined : datasetSpec.annotations[ABUNDANCE_UNIT_ANN]
-
 	// --- Classify discovered columns into slots[slot][featureKey] = { col, transform }. ---
-	// Also grab the clonotype-label column (friendly "Clone Id") for the results table.
 	slots := {}
-	cloneLabelCol := undefined
 	for col in columns.getColumns("features") {
-		if is_undefined(cloneLabelCol) {
-			// The per-clonotype "Clone Id" label carries the canonical label spec name
-			// ("pl7.app/label") in both bulk and single-cell; fall back to the isLabel
-			// annotation / ref-name suffix for older upstreams.
-			labelAnn := is_undefined(col.spec.annotations) ? undefined : col.spec.annotations["pl7.app/isLabel"]
-			if col.spec.name == "pl7.app/label" || labelAnn == "true" || text.has_suffix(col.spec.name, "clonotype-label") {
-				cloneLabelCol = col
-			}
-		}
-		cl := classify(col, abundanceUnit)
+		cl := classify(col)
 		if is_undefined(cl) {
 			continue
 		}
@@ -302,17 +281,13 @@ wf.body(func(args) {
 	frameBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	scoreFrame := frameBuilder.build()
 
-	// Block-private results table (Main page): Clone Id + score + exactly the metrics
-	// that fed the score — nothing else. Every column is per-clonotype (the features
-	// were discovered on the clonotype axis, and the score is emitted on it), so the
-	// table is naturally one row per clonotype. The model renders these columns as-is
-	// (no pool discovery), so the displayed set is precisely "score + used metrics".
+	// Block-private results table (Main page): score + exactly the metrics that fed the
+	// score — nothing else. Every column is per-clonotype (the features were discovered on
+	// the clonotype axis, and the score is emitted on it), so the table is naturally one row
+	// per clonotype.
 	// The Distributions histogram enriches this frame from the pool (model side) and picks
 	// plottable signals via a spec predicate — no extra frame or per-column flag needed here.
 	tableBuilder := pframes.pFrameBuilder()
-	if !is_undefined(cloneLabelCol) {
-		tableBuilder.add("cloneId", cloneLabelCol.spec, cloneLabelCol.data)
-	}
 	tableBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	for c in inputCols {
 		tableBuilder.add(c.header, c.spec, c.data)
