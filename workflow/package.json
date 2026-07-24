@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.repertoire-score.workflow",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "private": true,
   "description": "Block Workflow",
   "type": "module",
@@ -18,6 +18,5 @@
     "@platforma-sdk/test": "catalog:",
     "shx": "catalog:",
     "vitest": "catalog:"
-  },
-  "peerDependencies": {}
+  }
 }

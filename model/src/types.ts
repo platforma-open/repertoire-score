@@ -82,6 +82,7 @@ export type FeatureKey =
   | "ntMutations"
   | "logCells"
   | "negLogPgen"
+  | "negLogLightPgen"
   | "fastStar";
 
 /**
@@ -112,7 +113,7 @@ export type ScoreLogColumn = {
   sourceColumn: string;
   /** Raw->analysis mapping applied before ranking. */
   transform: "identity" | "log1p" | "hitFlag";
-  /** Coefficient actually applied (light-chain siblings already scaled by 0.20). */
+  /** Coefficient actually applied to this feature. */
   coefficient: number;
 };
 

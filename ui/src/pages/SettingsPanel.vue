@@ -63,6 +63,7 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   ntMutations: "Nt mutations",
   logCells: "Abundance (log cells)",
   negLogPgen: "Generation probability (-log10)",
+  negLogLightPgen: "Generation probability, light chain (-log10)",
   fastStar: "Convergence (fast-STAR)",
 };
 const FEATURE_TOOLTIPS: Record<FeatureKey, string> = {
@@ -72,6 +73,8 @@ const FEATURE_TOOLTIPS: Record<FeatureKey, string> = {
   ntMutations: "Total nucleotide substitutions from the germline V(D)J.",
   logCells: "Clone size — supporting cells, log-compressed.",
   negLogPgen: "How rare the sequence is under random recombination; higher = rarer.",
+  negLogLightPgen:
+    "How rare the light-chain sequence is under random recombination; higher = rarer. A separate signal from the heavy chain.",
   fastStar:
     "Whether the clone sits in a convergent CDR3 neighbourhood — evidence of antigen-driven selection.",
 };

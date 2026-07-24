@@ -36,8 +36,8 @@ SEQ_CDR_FRAC := "pl7.app/vdj/sequence/fractionCDRMutations"
 SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
 SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
 SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
-NEG_LOG_PGEN := "pl7.app/vdj/negLog10GenerationProbability"
-CONV_FASTSTAR := "pl7.app/vdj/convergence/starHit"
+NEG_LOG_PGEN := "pl7.app/vdj/minlog10GenerationProbability"
+CONV_FASTSTAR := "pl7.app/vdj/convergence/fastStar"
 ABUNDANCE_ANN := "pl7.app/isAbundance"
 ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
 ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
@@ -50,6 +50,10 @@ RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
 // presets.ts, no Tengo copy to drift. The canonical order matters because Tengo map
 // iteration is non-deterministic and this is a pure (reproducible) template.
 SLOT_ORDER := ["A", "B", ""]
+
+// Bulk single-chain axis chains that are LIGHT (secondary) — routes bulk-light Pgen to the
+// light-Pgen feature. Mirrors the light entries of slotOf's BULK_CHAIN_TO_SLOT.
+LIGHT_BULK_CHAINS := { "IGLight": true, "IGKappa": true, "IGLambda": true }
 
 // Tier -> preset-id variant tag.
 TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
@@ -137,6 +141,18 @@ slotOf := func(col, isSingleCell) {
 	// --- end TEMPORARY ---
 	// No chain domain at all -> chain-agnostic column (combined mutations, abundance total).
 	return "A"
+}
+
+// Route a (classified feature, is-light-chain) pair to the composite feature it contributes to,
+// per the hybrid scheme. Returns undefined to DROP the column.
+resolveFeature := func(fk, isLight) {
+	if fk == "negLogPgen" && isLight {
+		return "negLogLightPgen"
+	}
+	if fk == "fastStar" && isLight {
+		return undefined
+	}
+	return fk
 }
 
 wf.prepare(func(args) {
@@ -231,45 +247,51 @@ wf.body(func(args) {
 		coefMap = merged
 	}
 
-	// --- Build the feature-column list fed to the pt recipe. ---
-	// Heavy (A) / bulk get the raw coefficient; light-chain siblings (B) get 0.20x
-	// (sign preserved). Features absent from the resolved preset are skipped.
+	// --- Build the feature-column list fed to the pt recipe ---
+	// Each feature gets its OWN coefficient — no light-chain scaling. Light-chain Pgen routes to
+	// the explicit `negLogLightPgen` feature; light-chain STAR is dropped (STAR is heavy-only.
+	bulkChainIsLight := false
+	if !isSingleCell && !is_undefined(keyAxisSpec.domain) {
+		bulkChainIsLight = !is_undefined(LIGHT_BULK_CHAINS[keyAxisSpec.domain[CHAIN_DOMAIN]])
+	}
 	inputCols := []
 	// Parallel per-column diagnostic manifest (feature, chain, source column, transform,
-	// effective coefficient) emitted as the scoreLog output for double-checking.
+	// coefficient) emitted as the scoreLog output for double-checking.
 	scoreLog := []
 	for slot in SLOT_ORDER {
 		fkMap := slots[slot]
 		if is_undefined(fkMap) {
 			continue
 		}
+		isLight := slot == "B" || (slot == "" && bulkChainIsLight)
 		for fk in args.featureOrder {
 			entry := fkMap[fk]
 			if is_undefined(entry) {
 				continue
 			}
-			coef := coefMap[fk]
+			effFk := resolveFeature(fk, isLight)
+			if is_undefined(effFk) {
+				// e.g. light-chain STAR
+				continue
+			}
+			coef := coefMap[effFk]
 			if is_undefined(coef) {
 				continue
 			}
-			effCoef := coef
-			if slot == "B" {
-				effCoef = coef * 0.2
-			}
 			slotTag := slot == "" ? "x" : slot
 			inputCols = append(inputCols, {
-				header: "f_" + fk + "_" + slotTag,
+				header: "f_" + effFk + "_" + slotTag,
 				spec: entry.col.spec,
 				data: entry.col.data,
 				transform: entry.transform,
-				coef: effCoef
+				coef: coef
 			})
 			scoreLog = append(scoreLog, {
-				feature: fk,
+				feature: effFk,
 				chain: slotTag,
 				sourceColumn: entry.col.spec.name,
 				transform: entry.transform,
-				coefficient: effCoef
+				coefficient: coef
 			})
 		}
 	}
@@ -310,7 +332,8 @@ wf.body(func(args) {
 		}
 	}
 
-	scoreCol := computeScore.computeScore(inputCols, keyAxisSpec, scoreSpec)
+	scoreResult := computeScore.computeScore(inputCols, keyAxisSpec, scoreSpec, CONV_FASTSTAR)
+	scoreCol := scoreResult.score
 
 	// --- Inject provenance trace and export. ---
 	traceLabel := "Repertoire Score"
@@ -339,7 +362,14 @@ wf.body(func(args) {
 	tableBuilder := pframes.pFrameBuilder()
 	tableBuilder.add("score", scoreSpecTraced, scoreCol.data)
 	for c in inputCols {
-		tableBuilder.add(c.header, c.spec, c.data)
+		// The convergence hit column shows the null-backfilled "Not hit" display (built in
+		// computeScore) so absent clonotypes render "Not hit", matching how the score treated
+		// them; every other feature shows its raw values (honest blanks for genuine missings).
+		colData := c.data
+		if c.spec.name == CONV_FASTSTAR && !is_undefined(scoreResult.hitDisplays[c.header]) {
+			colData = scoreResult.hitDisplays[c.header].data
+		}
+		tableBuilder.add(c.header, c.spec, colData)
 	}
 	tableFrame := tableBuilder.build()
 

@@ -30,12 +30,16 @@ GRP := "__grp"
 *   - spec/data : the source PColumn (keyed on the clonotype-key axis).
 *   - transform : "identity" | "log1p" | "hitFlag" — the raw->analysis mapping.
 *   - coef      : signed coefficient applied to this feature's percentile rank
-*                 (already scaled by 0.20 for light-chain siblings).
+*                 (per-feature; no light-chain scaling — light Pgen is its own feature).
 * @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
 * @param scoreSpec   - the output score PColumn spec, sans axesSpec.
-* @return the score PColumn { spec, data }.
+* @param convColName - the convergence hit column name (matched on spec.name). Its null
+*                      clonotypes are treated as "Not hit": filled 0 for the score, shown
+*                      "Not hit" in the table — never median-imputed.
+* @return { score: <score PColumn>, hitDisplays: map of convergence in-frame header ->
+*          its "Hit"/"Not hit" display PColumn (nulls backfilled to "Not hit") }.
 */
-computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
+computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName) {
 	ll.assert(len(inputCols) > 0, "computeScore: no feature columns to score")
 
 	ptWf := pt.workflow().cpu(1).mem("4GiB")
@@ -132,14 +136,47 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec) {
 	df = df.withColumns(pt.col("__zord").mean().over("__z").alias("__zr"))
 	df = df.withColumns(pt.col("__zr").truediv(pt.col("__n")).alias("score"))
 
+	// --- Table-display string for the convergence hit column ---
+	// The table renders convergence as "Hit"/"Not hit" per clonotype. A clonotype absent from
+	// the convergence input was null-filled to 0 above (= not a hit), so render it "Not hit"
+	// rather than a blank cell.
+	// Score column plus one display column per convergence hit feature. Built by appending
+	// each entry (never a spread) so an empty display set still leaves a valid one-column list.
+	saveColumns := [{ column: "score", spec: scoreSpec }]
+	for c in inputCols {
+		if c.spec.name == convColName {
+			df = df.withColumns(
+				pt.when(pt.col(c.header).eq(pt.lit(1))).
+					then(pt.lit("Hit")).
+					otherwise(pt.lit("Not hit")).
+					alias(c.header + "__disp"))
+			saveColumns = append(saveColumns, {
+				column: c.header + "__disp",
+				spec: {
+					kind: "PColumn",
+					name: c.spec.name,
+					valueType: "String",
+					domain: c.spec.domain,
+					annotations: c.spec.annotations
+				}
+			})
+		}
+	}
+
 	df.saveFrameDirect("scoreFrame", {
 		axes: [{ column: "clonotypeKey", spec: keyAxisSpec }],
-		columns: [{ column: "score", spec: scoreSpec }],
+		columns: saveColumns,
 		partitionKeyLength: 0
 	})
 
 	cols := pUtil.pFrameToColumnsMap(ptWf.run().getFrameDirect("scoreFrame"))
-	return cols["score"]
+	hitDisplays := {}
+	for c in inputCols {
+		if c.spec.name == convColName {
+			hitDisplays[c.header] = cols[c.header + "__disp"]
+		}
+	}
+	return { score: cols["score"], hitDisplays: hitDisplays }
 }
 
 export ll.toStrict({

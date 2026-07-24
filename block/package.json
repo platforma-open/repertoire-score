@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.repertoire-score",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "files": [
     "dist",
     "block-pack"
@@ -22,7 +22,6 @@
     "do-pack": "shx rm -f package.tgz && pnpm pack && shx mv *.tgz package.tgz",
     "check": "ts-builder type-check --target block-facade"
   },
-  "dependencies": {},
   "devDependencies": {
     "@milaboratories/ts-builder": "catalog:",
     "@milaboratories/ts-configs": "catalog:",
@@ -50,7 +49,11 @@
       "longDescription": "file:../docs/description.md",
       "changelog": "file:../CHANGELOG.md",
       "tags": [
-        "vdj"
+        "airr",
+        "vdj",
+        "downstream",
+        "repertoire",
+        "antibody"
       ],
       "organization": {
         "name": "MiLaboratories Inc",

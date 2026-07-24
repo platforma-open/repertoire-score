@@ -8,6 +8,7 @@ export const FEATURE_ORDER: FeatureKey[] = [
   "ntMutations",
   "logCells",
   "negLogPgen",
+  "negLogLightPgen",
   "fastStar",
 ];
 
@@ -19,12 +20,16 @@ export const FEATURE_SIGNAL: Record<FeatureKey, SignalKind> = {
   ntMutations: "mutations",
   logCells: "abundance",
   negLogPgen: "pgen",
+  negLogLightPgen: "pgen",
   fastStar: "convergence",
 };
 
 /**
- * v1 preset coefficients, keyed by (family, tier). Values are heavy-chain coefficients;
- * light-chain analogues are 0.20× (sign preserved) at compute time.
+ * v1 preset coefficients, keyed by (family, tier).
+ * Each feature carries its own coefficient — there is NO light-chain scaling. Mutations and
+ * abundance are chain-aggregated (one column, heavy+light merged); light-chain generation
+ * probability is an explicit feature (`negLogLightPgen`) in Tier 2b/3; convergence (`fastStar`)
+ * is heavy-only.
  *
  * - Standard family: hand-set, non-negative, sum-to-1 (biology-informed direction).
  * - Antigen-selected family: fitted logistic regression on percentile-ranked features — signed.
@@ -50,7 +55,8 @@ export const PRESET_COEFFICIENTS: Record<
       ntMutations: 0.15,
       aaMutationsCDR: 0.15,
       aaMutationsFWR: 0.1,
-      negLogPgen: 0.5,
+      negLogPgen: 0.4,
+      negLogLightPgen: 0.1,
     },
     "3": {
       logCells: 0.05,
@@ -58,7 +64,8 @@ export const PRESET_COEFFICIENTS: Record<
       aaMutationsCDR: 0.1,
       aaMutationsFWR: 0.1,
       fastStar: 0.35,
-      negLogPgen: 0.3,
+      negLogPgen: 0.25,
+      negLogLightPgen: 0.05,
     },
   },
   "antigen-selected": {
@@ -78,21 +85,23 @@ export const PRESET_COEFFICIENTS: Record<
       fastStar: -0.8755,
     },
     "2b": {
-      cdrMutationFraction: 0.5205,
-      aaMutationsCDR: -0.4424,
-      aaMutationsFWR: 1.6972,
-      ntMutations: -0.9703,
-      logCells: -1.1228,
-      negLogPgen: 1.723,
+      cdrMutationFraction: 0.414,
+      aaMutationsCDR: -0.365,
+      aaMutationsFWR: 1.807,
+      ntMutations: -0.986,
+      logCells: -1.139,
+      negLogPgen: 1.714,
+      negLogLightPgen: 1.004,
     },
     "3": {
-      cdrMutationFraction: 0.4191,
-      aaMutationsCDR: 0.048,
-      aaMutationsFWR: 1.6509,
-      ntMutations: -1.057,
-      logCells: -0.9948,
-      negLogPgen: 2.7935,
-      fastStar: -2.5498,
+      cdrMutationFraction: 0.331,
+      aaMutationsCDR: 0.1,
+      aaMutationsFWR: 1.776,
+      ntMutations: -1.077,
+      logCells: -1.006,
+      negLogPgen: 2.764,
+      negLogLightPgen: 0.92,
+      fastStar: -2.5,
     },
   },
 };

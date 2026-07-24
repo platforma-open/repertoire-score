@@ -62,9 +62,9 @@ const MUTATION_COLUMN_NAMES = new Set([
   "pl7.app/vdj/sequence/fractionCDRMutations",
 ]);
 // Generation probability: the score consumes -log10(Pgen).
-const PGEN_COLUMN_NAME = "pl7.app/vdj/negLog10GenerationProbability";
+const PGEN_COLUMN_NAME = "pl7.app/vdj/minlog10GenerationProbability";
 // Convergence signal = the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit").
-const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/starHit";
+const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
