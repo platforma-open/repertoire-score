@@ -1,0 +1,184 @@
+// Composite repertoire score — the pure-pt (Polars) computation.
+//
+// One score per clonotype, computed over a single global window (the whole input).
+// The recipe: null-fill each feature (median for continuous features, 0 for hit flags),
+// average-rank it, take the coefficient-weighted sum of the ranks, then re-rank that
+// composite and normalise to (0, 1].
+// The final re-rank is what pins the output to [0, 1] regardless of the (signed)
+// coefficient magnitudes — so signed antigen-selected coefficients need no clamping.
+//
+// The compute runs inline as a pt workflow (the verified pframe<->pt bridge from
+// clonotype-browser/annotations-stats.lib.tengo and lead-selection/utils.lib.tengo):
+// the input frame is built directly from PColumns, and the score PColumn is read back
+// via pFrameToColumnsMap. Kept in its own file so the pt recipe is isolated from the
+// discovery/classification logic in main.tpl.tengo.
+
+ll := import("@platforma-sdk/workflow-tengo:ll")
+pt := import("@platforma-sdk/workflow-tengo:pt")
+pUtil := import("@platforma-sdk/workflow-tengo:pframes.util")
+
+// The constant single-group column that turns every window op into a whole-input
+// aggregate.
+GRP := "__grp"
+
+/**
+* Computes the composite score for a set of per-clonotype feature columns.
+*
+* @param inputCols - array of feature descriptors, each:
+*   { header: string, spec: object, data: object, transform: string, coef: number }
+*   - header    : unique in-frame column name for this feature contribution.
+*   - spec/data : the source PColumn (keyed on the clonotype-key axis).
+*   - transform : "identity" | "log1p" | "hitFlag" — the raw->analysis mapping.
+*   - coef      : signed coefficient applied to this feature's percentile rank
+*                 (per-feature; no light-chain scaling — light Pgen is its own feature).
+* @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
+* @param scoreSpec   - the output score PColumn spec, sans axesSpec.
+* @param convColName - the convergence hit column name (matched on spec.name). Its null
+*                      clonotypes are treated as "Not hit": filled 0 for the score, shown
+*                      "Not hit" in the table — never median-imputed.
+* @return { score: <score PColumn>, hitDisplays: map of convergence in-frame header ->
+*          its "Hit"/"Not hit" display PColumn (nulls backfilled to "Not hit") }.
+*/
+computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName) {
+	ll.assert(len(inputCols) > 0, "computeScore: no feature columns to score")
+
+	ptWf := pt.workflow().cpu(1).mem("4GiB")
+
+	// Build the joined input frame directly from the PColumns — a full join on the
+	// shared clonotype-key axis gives one row per clonotype with every feature.
+	entries := []
+	for c in inputCols {
+		entries = append(entries, pt.p.column(c.header, { spec: c.spec, data: c.data }))
+	}
+
+	// Project the clonotype key as a named column, plus each feature with its
+	// raw->analysis transform folded in.
+	selectExprs := [pt.sc.axis(keyAxisSpec).alias("clonotypeKey")]
+	for c in inputCols {
+		e := pt.col(c.header)
+		if c.transform == "log1p" {
+			// Abundance (e.g. unique cell count) is compressed by log1p.
+			e = pt.col(c.header).plus(pt.lit(1)).log()
+		} else if c.transform == "hitFlag" {
+			// Convergence "Hit"/"Not hit" flag -> 1.0 / 0.0. `.eq` yields null on null input
+			// and the cast preserves it; that null is filled with 0 (NOT the median) below,
+			// since an absent convergence result means "no hit", not "average convergence".
+			e = pt.col(c.header).eq("Hit").cast("Double")
+		}
+		selectExprs = append(selectExprs, e.alias(c.header))
+	}
+	df := ptWf.frame(pt.p.full(entries...)).select(selectExprs...)
+
+	// Single global group for every subsequent window op.
+	df = df.withColumns(pt.lit(1).alias(GRP))
+
+	// Null-fill each feature within the global window. Continuous features get the median
+	// (a neutral, mid-rank stand-in for a missing measurement). A hit-flag feature instead
+	// gets 0: a null there means the clonotype was filtered upstream before convergence could
+	// be called.
+	imputeExprs := []
+	for c in inputCols {
+		fill := pt.col(c.header).median().over(GRP)
+		if c.transform == "hitFlag" {
+			fill = pt.lit(0)
+		}
+		imputeExprs = append(imputeExprs,
+			pt.col(c.header).fillNull(fill).alias(c.header))
+	}
+	df = df.withColumns(imputeExprs...)
+
+	// Average-rank each feature. PTabler's rank is ordinal-only — every row gets a
+	// distinct 1..n with ties broken by arbitrary row order — but A-0027 calls for *average*
+	// rank. We reconstruct average rank exactly: ordinal lands all rows sharing a value on a
+	// contiguous block of consecutive integers, and average rank is by definition the mean of
+	// that block, so mean(ordinal) grouped by the value is the average rank — and it is
+	// deterministic, since the block's mean is independent of the arbitrary within-tie order.
+	//
+	// Raw rank (1..n), not percentile (rank/n): the two yield the same final score here.
+	//
+	// CAVEAT: mean-over-value is correct only because GRP is a single global group. If GRP
+	// ever became a real partition (per-sample, ...), the mean would need .over(GRP, <col>)
+	// to avoid pooling ties across partitions.
+	ordExprs := []
+	for c in inputCols {
+		ordExprs = append(ordExprs,
+			pt.rank(pt.col(c.header)).over(GRP).alias("__ord_" + c.header))
+	}
+	df = df.withColumns(ordExprs...)
+
+	// Average rank = mean of the ordinal block within each equal-value group. Materialise
+	// before any arithmetic uses them.
+	rankExprs := []
+	for c in inputCols {
+		rankExprs = append(rankExprs,
+			pt.col("__ord_" + c.header).mean().over(c.header).alias("__r_" + c.header))
+	}
+	df = df.withColumns(rankExprs...)
+
+	// Coefficient-weighted sum of the materialised rank columns.
+	zExpr := undefined
+	for c in inputCols {
+		term := pt.col("__r_" + c.header).multiply(pt.lit(c.coef))
+		if is_undefined(zExpr) {
+			zExpr = term
+		} else {
+			zExpr = zExpr.plus(term)
+		}
+	}
+	df = df.withColumns(zExpr.alias("__z"))
+
+	// Re-rank the composite with the same ordinal->average-rank reconstruction as the
+	// features, so tied composites share one deterministic rank; then normalise to (0, 1]
+	// via rank / group size.
+	df = df.withColumns(
+		pt.rank(pt.col("__z")).over(GRP).alias("__zord"),
+		pt.col(GRP).count().over(GRP).alias("__n"))
+	df = df.withColumns(pt.col("__zord").mean().over("__z").alias("__zr"))
+	df = df.withColumns(pt.col("__zr").truediv(pt.col("__n")).alias("score"))
+
+	// --- Table-display string for the convergence hit column ---
+	// The table renders convergence as "Hit"/"Not hit" per clonotype. A clonotype absent from
+	// the convergence input was null-filled to 0 above (= not a hit), so render it "Not hit"
+	// rather than a blank cell.
+	// Score column plus one display column per convergence hit feature. Built by appending
+	// each entry (never a spread) so an empty display set still leaves a valid one-column list.
+	saveColumns := [{ column: "score", spec: scoreSpec }]
+	for c in inputCols {
+		if c.spec.name == convColName {
+			df = df.withColumns(
+				pt.when(pt.col(c.header).eq(pt.lit(1))).
+					then(pt.lit("Hit")).
+					otherwise(pt.lit("Not hit")).
+					alias(c.header + "__disp"))
+			saveColumns = append(saveColumns, {
+				column: c.header + "__disp",
+				spec: {
+					kind: "PColumn",
+					name: c.spec.name,
+					valueType: "String",
+					domain: c.spec.domain,
+					annotations: c.spec.annotations
+				}
+			})
+		}
+	}
+
+	df.saveFrameDirect("scoreFrame", {
+		axes: [{ column: "clonotypeKey", spec: keyAxisSpec }],
+		columns: saveColumns,
+		partitionKeyLength: 0
+	})
+
+	cols := pUtil.pFrameToColumnsMap(ptWf.run().getFrameDirect("scoreFrame"))
+	hitDisplays := {}
+	for c in inputCols {
+		if c.spec.name == convColName {
+			hitDisplays[c.header] = cols[c.header + "__disp"]
+		}
+	}
+	return { score: cols["score"], hitDisplays: hitDisplays }
+}
+
+export ll.toStrict({
+	computeScore: computeScore
+})

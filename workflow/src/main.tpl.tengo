@@ -1,0 +1,397 @@
+// Repertoire Score — workflow.
+//
+// Consumes the selected clonotype dataset anchor and emits ONE composite score per
+// clonotype. The score is a percentile-normalised linear combination of the per-clonotype
+// signal columns discovered on the input:
+//   1. discover candidate per-clonotype columns anchored on the clonotype-key axis;
+//   2. classify each into a composite feature (mutations / abundance / pgen / convergence);
+//   3. resolve the effective preset tier from the signals actually present;
+//   4. hand the feature columns + their coefficients to the pt recipe (compute-score.lib);
+//   5. export the score PColumn with its spec + provenance trace.
+//
+// Output score PColumn:
+//   name        : pl7.app/vdj/repertoireScore
+//   axis        : input clonotypeKey (bulk) / scClonotypeKey (SC), unchanged
+//   value range : [0, 1]
+//   domain      : pl7.app/vdj/chain (bulk) | pl7.app/vdj/receptor (SC), mirroring input;
+//                 pl7.app/vdj/repertoireScore/preset = "<family>-<variant>"
+//   annotations : isScore, label, description, score/defaultCutoff; + injected trace.
+
+wf := import("@platforma-sdk/workflow-tengo:workflow")
+pframes := import("@platforma-sdk/workflow-tengo:pframes")
+pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
+ll := import("@platforma-sdk/workflow-tengo:ll")
+smart := import("@platforma-sdk/workflow-tengo:smart")
+constants := import("@platforma-sdk/workflow-tengo:constants")
+canonical := import("@platforma-sdk/workflow-tengo:canonical")
+
+computeScore := import(":compute-score")
+
+// --- Upstream column names / annotations we classify against. ---
+// MUST stay in sync with the model's classifyFeature (model/src/index.ts), which recognizes
+// the same columns for the reactive UI tier detection. No shared code across the TS/Tengo
+// boundary, so any change here must be mirrored there (and vice-versa) — otherwise the UI
+// advertises a signal this workflow can't feed, or the reverse.
+SEQ_CDR_FRAC := "pl7.app/vdj/sequence/fractionCDRMutations"
+SEQ_AA_CDR := "pl7.app/vdj/sequence/nAAMutationsCDR"
+SEQ_AA_FWR := "pl7.app/vdj/sequence/nAAMutationsFWR"
+SEQ_NMUT := "pl7.app/vdj/sequence/nMutations"
+NEG_LOG_PGEN := "pl7.app/vdj/minlog10GenerationProbability"
+CONV_FASTSTAR := "pl7.app/vdj/convergence/fastStar"
+ABUNDANCE_ANN := "pl7.app/isAbundance"
+ABUNDANCE_UNIT_ANN := "pl7.app/abundance/unit"
+ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
+SC_CHAIN_DOMAIN := "pl7.app/vdj/scClonotypeChain"
+CHAIN_DOMAIN := "pl7.app/vdj/chain"
+RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
+
+// The feature->signal map and the canonical feature order come from args
+// (args.featureSignal / args.featureOrder) — single source of truth in the model's
+// presets.ts, no Tengo copy to drift. The canonical order matters because Tengo map
+// iteration is non-deterministic and this is a pure (reproducible) template.
+SLOT_ORDER := ["A", "B", ""]
+
+// Bulk single-chain axis chains that are LIGHT (secondary) — routes bulk-light Pgen to the
+// light-Pgen feature. Mirrors the light entries of slotOf's BULK_CHAIN_TO_SLOT.
+LIGHT_BULK_CHAINS := { "IGLight": true, "IGKappa": true, "IGLambda": true }
+
+// Tier -> preset-id variant tag.
+TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
+
+// Classify one upstream column into { fk, transform } or undefined.
+//   transform: "identity" | "log1p" | "hitFlag" — analysis mapping applied in pt.
+classify := func(col) {
+	name := col.spec.name
+	if name == SEQ_CDR_FRAC {
+		return { fk: "cdrMutationFraction", transform: "identity" }
+	}
+	if name == SEQ_AA_CDR {
+		return { fk: "aaMutationsCDR", transform: "identity" }
+	}
+	if name == SEQ_AA_FWR {
+		return { fk: "aaMutationsFWR", transform: "identity" }
+	}
+	if name == SEQ_NMUT {
+		return { fk: "ntMutations", transform: "identity" }
+	}
+	if name == NEG_LOG_PGEN {
+		// Already -log10(Pgen): larger = rarer. Used as-is.
+		return { fk: "negLogPgen", transform: "identity" }
+	}
+	ann := col.spec.annotations
+	if !is_undefined(ann) && ann[ABUNDANCE_ANN] == "true" {
+		// The abundance feature is the PRIMARY clonal-size total: log1p(Supporting Cells)
+		// for single-cell; the bulk analogue is Supporting Reads / Supporting UMIs. MiXCR
+		// marks several columns isAbundance, but on the per-clonotype scope it emits exactly
+		// ONE raw, non-"samples" total per modality (reads / molecules / cells — the
+		// non-primary totals are dropped), so two annotation checks pin it uniquely:
+		//   - never "samples" (sample-count is clonotype prevalence, NOT abundance);
+		//   - never normalized fractions (we want the raw count for log1p).
+		// This mirrors the model's classifyFeature exactly (index.ts).
+		if ann[ABUNDANCE_NORM_ANN] != "true" && ann[ABUNDANCE_UNIT_ANN] != "samples" {
+			return { fk: "logCells", transform: "log1p" }
+		}
+	}
+	if name == CONV_FASTSTAR {
+		// The fast-STAR "Hit"/"Not hit" flag feeds the fastStar coefficient slot; cast to
+		// 0/1 before percentile-ranking.
+		return { fk: "fastStar", transform: "hitFlag" }
+	}
+	return undefined
+}
+
+// Chain slot for a column: bulk -> "" (single chain); SC -> scClonotypeChain domain
+// ("A" heavy / "B" light). Chain-agnostic SC columns (e.g. per-clonotype abundance)
+// fall back to the primary slot "A".
+slotOf := func(col, isSingleCell) {
+	if !isSingleCell {
+		return ""
+	}
+	dom := col.spec.domain
+	if is_undefined(dom) {
+		return "A"
+	}
+	scChain := dom[SC_CHAIN_DOMAIN]
+	if !is_undefined(scChain) {
+		// A per-chain SC column MUST resolve to a known slot — refuse to silently drop a
+		// column carrying an unexpected chain value (downstream only walks SLOT_ORDER).
+		ll.assert(scChain == "A" || scChain == "B",
+			"repertoire-score: column %s carries unexpected %s=%s (expected \"A\" or \"B\")",
+			col.spec.name, SC_CHAIN_DOMAIN, scChain)
+		return scChain
+	}
+	// --- TEMPORARY: remove once clonotype-convergence emits scClonotypeChain for SC. ---
+	// The convergence block currently stamps its single-cell per-chain columns with the
+	// bulk-style `pl7.app/vdj/chain` (IGHeavy/IGLight/...) instead of `scClonotypeChain`
+	// (A/B). Without this, both heavy and light convergence miss the check above, collapse
+	// to the "A" fallback, collide (last-write-wins), and the heavy signal is silently lost.
+	// Map the bulk chain domain to the SC slot as a stopgap. When the upstream block is
+	// fixed, delete this branch and BULK_CHAIN_TO_SLOT — the scClonotypeChain branch covers it.
+	BULK_CHAIN_TO_SLOT := { "IGHeavy": "A", "IGLight": "B", "IGKappa": "B", "IGLambda": "B" }
+	chain := dom[CHAIN_DOMAIN]
+	if !is_undefined(chain) {
+		// The column declares a chain we can't map to a slot — fail rather than mis-slot it
+		// into the primary "A" and risk a silent collision.
+		bulkSlot := BULK_CHAIN_TO_SLOT[chain]
+		ll.assert(!is_undefined(bulkSlot),
+			"repertoire-score: single-cell column %s carries an unmapped %s=%s — cannot assign a slot",
+			col.spec.name, CHAIN_DOMAIN, chain)
+		return bulkSlot
+	}
+	// --- end TEMPORARY ---
+	// No chain domain at all -> chain-agnostic column (combined mutations, abundance total).
+	return "A"
+}
+
+// Route a (classified feature, is-light-chain) pair to the composite feature it contributes to,
+// per the hybrid scheme. Returns undefined to DROP the column.
+resolveFeature := func(fk, isLight) {
+	if fk == "negLogPgen" && isLight {
+		return "negLogLightPgen"
+	}
+	if fk == "fastStar" && isLight {
+		return undefined
+	}
+	return fk
+}
+
+wf.prepare(func(args) {
+	bb := wf.createPBundleBuilder()
+	bb.ignoreMissingDomains()
+	bb.addAnchor("main", args.inputAnchor)
+
+	// All per-clonotype columns keyed on the clonotype-key axis (anchor axis idx 1) —
+	// the candidate composite features.
+	bb.addMulti({ axes: [{ anchor: "main", idx: 1 }] }, "features")
+
+	return { columns: bb.build() }
+})
+
+wf.body(func(args) {
+	columns := args.columns
+	datasetSpec := columns.getSpec(args.inputAnchor)
+	keyAxisSpec := datasetSpec.axesSpec[1]
+	isSingleCell := keyAxisSpec.name == "pl7.app/vdj/scClonotypeKey"
+
+	// --- Classify discovered columns into slots[slot][featureKey] = { col, transform }. ---
+	slots := {}
+	for col in columns.getColumns("features") {
+		cl := classify(col)
+		if is_undefined(cl) {
+			continue
+		}
+		slot := slotOf(col, isSingleCell)
+		if is_undefined(slots[slot]) {
+			slots[slot] = {}
+		}
+		// Each feature key maps to exactly one column per slot (features are matched by
+		// unique name; abundance to the single primary total). A collision means an upstream
+		// block emitted duplicate or ambiguous per-chain columns (e.g. two abundance totals,
+		// or heavy+light sharing a slot) — fail loudly rather than silently keep the last.
+		existing := slots[slot][cl.fk]
+		if !is_undefined(existing) {
+			ll.panic("repertoire-score: two columns map to feature %s in slot %s: %s and %s — refusing to silently pick one",
+				cl.fk, slot, existing.col.spec.name, col.spec.name)
+		}
+		slots[slot][cl.fk] = { col: col, transform: cl.transform }
+	}
+
+	// --- Present signals -> effective tier. ---
+	presentSignals := {}
+	for slot in SLOT_ORDER {
+		fkMap := slots[slot]
+		if is_undefined(fkMap) {
+			continue
+		}
+		for fk, _ in fkMap {
+			presentSignals[args.featureSignal[fk]] = true
+		}
+	}
+	hasMixcr := presentSignals["mutations"] == true || presentSignals["abundance"] == true
+	hasPgen := presentSignals["pgen"] == true
+	hasConvergence := presentSignals["convergence"] == true
+
+	tier := ""
+	if args.tierMode == "custom" {
+		ll.assert(!is_undefined(args.tier), "custom scoring-signals mode requires a pinned tier")
+		tier = args.tier
+	} else {
+		ll.assert(hasMixcr,
+			"input dataset carries no MiXCR mutation/abundance columns — the composite score cannot be computed")
+		if hasPgen && hasConvergence {
+			tier = "3"
+		} else if hasPgen {
+			tier = "2b"
+		} else if hasConvergence {
+			tier = "2a"
+		} else {
+			tier = "1"
+		}
+	}
+
+	// --- Resolve coefficients: preset tier row, with optional per-feature custom overrides. ---
+	coefMap := args.coefficients[tier]
+	ll.assert(!is_undefined(coefMap), "no preset coefficients for tier %s", tier)
+	if args.weightMode == "custom" && !is_undefined(args.customWeights) {
+		merged := {}
+		for k, v in coefMap {
+			merged[k] = v
+		}
+		// Only edit the magnitude of features already in the preset tier — keep the
+		// feature SET fixed by the (family, tier) preset.
+		for k, v in args.customWeights {
+			if !is_undefined(merged[k]) {
+				merged[k] = v
+			}
+		}
+		coefMap = merged
+	}
+
+	// --- Build the feature-column list fed to the pt recipe ---
+	// Each feature gets its OWN coefficient — no light-chain scaling. Light-chain Pgen routes to
+	// the explicit `negLogLightPgen` feature; light-chain STAR is dropped (STAR is heavy-only.
+	bulkChainIsLight := false
+	if !isSingleCell && !is_undefined(keyAxisSpec.domain) {
+		bulkChainIsLight = !is_undefined(LIGHT_BULK_CHAINS[keyAxisSpec.domain[CHAIN_DOMAIN]])
+	}
+	inputCols := []
+	// Parallel per-column diagnostic manifest (feature, chain, source column, transform,
+	// coefficient) emitted as the scoreLog output for double-checking.
+	scoreLog := []
+	for slot in SLOT_ORDER {
+		fkMap := slots[slot]
+		if is_undefined(fkMap) {
+			continue
+		}
+		isLight := slot == "B" || (slot == "" && bulkChainIsLight)
+		for fk in args.featureOrder {
+			entry := fkMap[fk]
+			if is_undefined(entry) {
+				continue
+			}
+			effFk := resolveFeature(fk, isLight)
+			if is_undefined(effFk) {
+				// e.g. light-chain STAR
+				continue
+			}
+			coef := coefMap[effFk]
+			if is_undefined(coef) {
+				continue
+			}
+			slotTag := slot == "" ? "x" : slot
+			inputCols = append(inputCols, {
+				header: "f_" + effFk + "_" + slotTag,
+				spec: entry.col.spec,
+				data: entry.col.data,
+				transform: entry.transform,
+				coef: coef
+			})
+			scoreLog = append(scoreLog, {
+				feature: effFk,
+				chain: slotTag,
+				sourceColumn: entry.col.spec.name,
+				transform: entry.transform,
+				coefficient: coef
+			})
+		}
+	}
+	ll.assert(len(inputCols) > 0,
+		"no scorable feature columns present for the resolved preset (family %s, tier %s)", args.presetFamily, tier)
+
+	// --- Output score PColumn spec. ---
+	variant := TIER_VARIANT[tier]
+	presetId := args.presetFamily + "-" + variant
+	if args.weightMode == "custom" {
+		presetId = presetId + "-custom"
+	}
+
+	scoreDomain := {}
+	if isSingleCell {
+		if !is_undefined(keyAxisSpec.domain) && !is_undefined(keyAxisSpec.domain[RECEPTOR_DOMAIN]) {
+			scoreDomain[RECEPTOR_DOMAIN] = keyAxisSpec.domain[RECEPTOR_DOMAIN]
+		}
+	} else {
+		if !is_undefined(keyAxisSpec.domain) && !is_undefined(keyAxisSpec.domain[CHAIN_DOMAIN]) {
+			scoreDomain[CHAIN_DOMAIN] = keyAxisSpec.domain[CHAIN_DOMAIN]
+		}
+	}
+	scoreDomain["pl7.app/vdj/repertoireScore/preset"] = presetId
+
+	scoreSpec := {
+		kind: "PColumn",
+		name: "pl7.app/vdj/repertoireScore",
+		valueType: "Double",
+		domain: scoreDomain,
+		annotations: {
+			"pl7.app/isScore": "true",
+			"pl7.app/label": "Repertoire score",
+			"pl7.app/description": args.presetFamily + " family, tier " + tier + " (" + variant + ")",
+			"pl7.app/score/defaultCutoff": "0.8",
+			"pl7.app/format": ".2f",
+			"pl7.app/table/orderPriority": "95000"
+		}
+	}
+
+	scoreResult := computeScore.computeScore(inputCols, keyAxisSpec, scoreSpec, CONV_FASTSTAR)
+	scoreCol := scoreResult.score
+
+	// --- Inject provenance trace and export. ---
+	traceLabel := "Repertoire Score"
+	if !is_undefined(datasetSpec.annotations) && !is_undefined(datasetSpec.annotations["pl7.app/label"]) {
+		traceLabel = datasetSpec.annotations["pl7.app/label"]
+	}
+	trace := pSpec.makeTrace(datasetSpec, {
+		type: "milaboratories.repertoire-score",
+		importance: 30,
+		label: traceLabel
+	})
+
+	scoreSpecTraced := trace.inject(scoreCol.spec)
+
+	// Export family: the score column only.
+	frameBuilder := pframes.pFrameBuilder()
+	frameBuilder.add("score", scoreSpecTraced, scoreCol.data)
+	scoreFrame := frameBuilder.build()
+
+	// Block output results table (Main page): score + exactly the metrics that fed the
+	// score — nothing else. Every column is per-clonotype (the features were discovered on
+	// the clonotype axis, and the score is emitted on it), so the table is naturally one row
+	// per clonotype.
+	// The Distributions histogram enriches this frame from the pool (model side) and picks
+	// plottable signals via a spec predicate — no extra frame or per-column flag needed here.
+	tableBuilder := pframes.pFrameBuilder()
+	tableBuilder.add("score", scoreSpecTraced, scoreCol.data)
+	for c in inputCols {
+		// The convergence hit column shows the null-backfilled "Not hit" display (built in
+		// computeScore) so absent clonotypes render "Not hit", matching how the score treated
+		// them; every other feature shows its raw values (honest blanks for genuine missings).
+		colData := c.data
+		if c.spec.name == CONV_FASTSTAR && !is_undefined(scoreResult.hitDisplays[c.header]) {
+			colData = scoreResult.hitDisplays[c.header].data
+		}
+		tableBuilder.add(c.header, c.spec, colData)
+	}
+	tableFrame := tableBuilder.build()
+
+	// Diagnostic manifest: the per-column weights actually applied (post light-chain
+	// scaling) with each column's chain and source, for double-checking from the model.
+	// canonical.encode gives sorted-key, deterministic bytes so the resource CID is stable
+	// across runs — plain json.encode would vary map key order and churn the CID.
+	scoreLogRes := smart.createValueResource(constants.RTYPE_JSON, canonical.encode({
+		preset: presetId,
+		tier: tier,
+		family: args.presetFamily,
+		weightMode: args.weightMode,
+		columns: scoreLog
+	}))
+
+	return {
+		outputs: {
+			tablePf: pframes.exportFrame(tableFrame),
+			scoreLog: scoreLogRes
+		},
+		exports: {
+			score: scoreFrame
+		}
+	}
+})
