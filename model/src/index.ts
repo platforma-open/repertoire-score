@@ -55,11 +55,12 @@ const inputAnchorSpecs = [
 // MiXCR SHM mutation features — the current in-vivo score's set, isScore upstream.
 // The nucleotide-mutations signal column — also the default scatterplot Y axis.
 export const NT_MUTATIONS_COLUMN = "pl7.app/vdj/sequence/nMutations";
+export const CDR_MUTATION_FRACTION_COLUMN = "pl7.app/vdj/sequence/fractionCDRMutations";
 const MUTATION_COLUMN_NAMES = new Set([
   "pl7.app/vdj/sequence/nAAMutationsCDR",
   "pl7.app/vdj/sequence/nAAMutationsFWR",
   NT_MUTATIONS_COLUMN,
-  "pl7.app/vdj/sequence/fractionCDRMutations",
+  CDR_MUTATION_FRACTION_COLUMN,
 ]);
 // Generation probability: the score consumes -log10(Pgen).
 const PGEN_COLUMN_NAME = "pl7.app/vdj/minlog10GenerationProbability";
@@ -160,7 +161,7 @@ function canonicalWeights(
 
 /** Default state for the Distributions histogram: binned counts, solid bars. */
 export const defaultGraphStateHistogram = (): GraphMakerState => ({
-  title: "Score & variable distributions",
+  title: "Variable distributions",
   template: "bins",
   currentTab: null,
   axesSettings: {
@@ -273,15 +274,29 @@ export const platforma = BlockModelV3.create(dataModel)
     return createPFrameForGraphs(ctx, pCols);
   })
 
-  // Column ids/specs of the block's own frame (label excluded), so the UI can default the
-  // chart to the score. (The full pickable set is the enriched PFrame filtered by
-  // `isHistogramValueColumn`; this list only needs to carry the score for the default.)
+  // Column ids/specs used by the UI to pick chart defaults (label excluded). The full pickable
+  // set is the enriched PFrame; this list carries the block's own frame columns PLUS the CDR
+  // mutation fraction column (so the Distributions plot can default to it even when the active
+  // preset doesn't score it — it's still offerable via the enriched PFrame).
   .output("histogramPfPcols", (ctx): PColumnIdAndSpec[] | undefined => {
     const pCols = ctx.outputs?.resolve("tablePf")?.getPColumns();
     if (!pCols) return undefined;
-    const plottable = pCols.filter((c) => c.spec.name !== "pl7.app/label");
-    if (plottable.length === 0) return undefined;
-    return plottable.map((c) => ({ columnId: c.id, spec: c.spec }));
+    const out: PColumnIdAndSpec[] = pCols
+      .filter((c) => c.spec.name !== "pl7.app/label")
+      .map((c) => ({ columnId: c.id, spec: c.spec }));
+    // Append the CDR mutation fraction column from the input pool if it isn't a scored feature,
+    // so it's available as the Distributions default regardless of the resolved preset.
+    const anchor = ctx.data.inputAnchor;
+    if (anchor && !out.some((p) => p.spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
+      const perClonotype =
+        ctx.resultPool.getAnchoredPColumns({ main: anchor }, [
+          { axes: [{ anchor: "main", idx: 1 }] },
+        ]) ?? [];
+      const cdr = perClonotype.find((c) => c.spec.name === CDR_MUTATION_FRACTION_COLUMN);
+      if (cdr) out.push({ columnId: cdr.id, spec: cdr.spec });
+    }
+    if (out.length === 0) return undefined;
+    return out;
   })
 
   // Diagnostic manifest of the per-column weights actually applied (post light-chain
@@ -302,7 +317,7 @@ export const platforma = BlockModelV3.create(dataModel)
   .sections(() => [
     { type: "link" as const, href: "/" as const, label: "Main" },
     { type: "link" as const, href: "/distributions" as const, label: "Distributions" },
-    { type: "link" as const, href: "/scatterplot" as const, label: "Scatterplot" },
+    // { type: "link" as const, href: "/scatterplot" as const, label: "Scatterplot" },
   ])
 
   .done();

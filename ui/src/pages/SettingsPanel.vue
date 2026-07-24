@@ -250,7 +250,7 @@ function onCoefInput(feature: FeatureKey, event: Event) {
     v-if="app.model.data.tierMode === 'custom'"
     v-model="app.model.data.tier"
     :options="tierOptions"
-    label="Signals used"
+    label="Used variables"
   >
     <template #tooltip>
       Each option builds on the <b>Base</b> (mutations + abundance, always from MiXCR); higher

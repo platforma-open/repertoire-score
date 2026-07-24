@@ -2,6 +2,7 @@
 import type { PredefinedGraphOption } from "@milaboratories/graph-maker";
 import { GraphMaker } from "@milaboratories/graph-maker";
 import {
+  CDR_MUTATION_FRACTION_COLUMN,
   defaultGraphStateHistogram,
   isPlottableColumn,
   REPERTOIRE_SCORE_COLUMN,
@@ -13,8 +14,10 @@ import { useApp } from "../app";
 const app = useApp();
 
 // The PFrame is enriched (pool metadata/linker columns available for grouping/labelling), but
-// only the score + available per-clonotype signals should be offerable as the histogram value.
-const dataColumnPredicate = isPlottableColumn;
+// only the available per-clonotype signals should be offerable as the histogram value — the
+// composite score is deliberately excluded here (it's shown in the Main table / Comparison).
+const dataColumnPredicate: typeof isPlottableColumn = (spec) =>
+  isPlottableColumn(spec) && spec.name !== REPERTOIRE_SCORE_COLUMN;
 
 // GraphMaker reads `initialData.optionsState` eagerly, so guarantee a non-undefined object.
 const graphState = computed({
@@ -24,14 +27,17 @@ const graphState = computed({
   },
 });
 
-// Default the value to the score so the score distribution renders straight away; the user
-// re-binds it to any available signal via the graph-maker UI.
+// Default the value to CDR mutation fraction so a signal distribution renders straight away;
+// fall back to the first available non-score signal if that column isn't present. The score is
+// never offered here.
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
   const pcols = app.model.outputs.histogramPfPcols;
   if (!pcols) return undefined;
-  const scoreCol = pcols.find((p) => p.spec.name === REPERTOIRE_SCORE_COLUMN);
-  if (!scoreCol) return undefined;
-  return [{ inputName: "value", selectedSource: scoreCol.spec }];
+  const cdrCol = pcols.find((p) => p.spec.name === CDR_MUTATION_FRACTION_COLUMN);
+  const firstSignal = pcols.find((p) => p.spec.name !== REPERTOIRE_SCORE_COLUMN);
+  const valueCol = cdrCol ?? firstSignal;
+  if (!valueCol) return undefined;
+  return [{ inputName: "value", selectedSource: valueCol.spec }];
 });
 </script>
 
