@@ -5,6 +5,7 @@ import type {
   PColumnSpec,
   PFrameHandle,
   PlRef,
+  PObjectId,
   RenderCtxBase,
 } from "@platforma-sdk/model";
 import {
@@ -14,6 +15,7 @@ import {
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
+  PColumnCollection,
 } from "@platforma-sdk/model";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 import type {
@@ -98,6 +100,28 @@ export function isPlottableColumn(spec: PColumnSpec): boolean {
 }
 
 /**
+ * Every per-clonotype column available for the given dataset, ids and specs only.
+ *
+ * Deliberately not `getAnchoredPColumns`: that one is a *data* query — it returns undefined
+ * unless every matched column's data is ready (blocks above finished running).
+ */
+function perClonotypeColumns<A, U>(
+  ctx: RenderCtxBase<A, U>,
+  ref: PlRef,
+): { id: PObjectId; spec: PColumnSpec }[] {
+  const anchorCtx = ctx.resultPool.resolveAnchorCtx({ main: ref });
+  if (!anchorCtx) return [];
+  return (
+    new PColumnCollection()
+      .addColumnProvider(ctx.resultPool)
+      .getUniversalEntries([{ axes: [{ anchor: "main", idx: 1 }] }], {
+        anchorCtx,
+        overrideLabelAnnotation: true,
+      }) ?? []
+  );
+}
+
+/**
  * Detect which composite signal families are present for the selected dataset, and the
  * implied preset tier. Pure spec read over the result pool — no Run required.
  */
@@ -105,12 +129,9 @@ function detectFeatures<A, U>(
   ctx: RenderCtxBase<A, U>,
   ref: PlRef,
 ): FeatureAvailability | undefined {
-  const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
-  if (!refSpec) return undefined;
+  if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-  const perClonotype =
-    ctx.resultPool.getAnchoredPColumns({ main: ref }, [{ axes: [{ anchor: "main", idx: 1 }] }]) ??
-    [];
+  const perClonotype = perClonotypeColumns(ctx, ref);
 
   const signals = new Set<SignalKind>();
   for (const col of perClonotype) {
@@ -236,7 +257,19 @@ export const platforma = BlockModelV3.create(dataModel)
   )
 
   // Reactive feature/tier detection for the selected dataset (no Run needed).
+  //
+  // Retentive: any unlocked (running) block upstream marks the pool read unstable, so this holds
+  // its last stable value instead of transiently shrinking while an upstream block's exports are
+  // recreated mid-run.
   .retentiveOutput("featureAvailability", (ctx) =>
+    ctx.data.inputAnchor ? detectFeatures(ctx, ctx.data.inputAnchor) : undefined,
+  )
+
+  // Same detection, published live (unstable renders included). Retention has nothing to hold on
+  // the first render, so a block configured while an upstream block runs would otherwise show no
+  // availability at all until that run finishes. The UI prefers the retentive value and falls
+  // back to this one.
+  .output("featureAvailabilityLive", (ctx) =>
     ctx.data.inputAnchor ? detectFeatures(ctx, ctx.data.inputAnchor) : undefined,
   )
 
@@ -288,11 +321,9 @@ export const platforma = BlockModelV3.create(dataModel)
     // so it's available as the Distributions default regardless of the resolved preset.
     const anchor = ctx.data.inputAnchor;
     if (anchor && !out.some((p) => p.spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
-      const perClonotype =
-        ctx.resultPool.getAnchoredPColumns({ main: anchor }, [
-          { axes: [{ anchor: "main", idx: 1 }] },
-        ]) ?? [];
-      const cdr = perClonotype.find((c) => c.spec.name === CDR_MUTATION_FRACTION_COLUMN);
+      const cdr = perClonotypeColumns(ctx, anchor).find(
+        (c) => c.spec.name === CDR_MUTATION_FRACTION_COLUMN,
+      );
       if (cdr) out.push({ columnId: cdr.id, spec: cdr.spec });
     }
     if (out.length === 0) return undefined;
