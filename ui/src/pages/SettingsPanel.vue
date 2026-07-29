@@ -24,10 +24,6 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// `featureAvailability` is a retentive model output (see model): it holds its last stable
-// value while the block reruns, instead of transiently shrinking as the upstream enrichment
-// columns drop out of the anchored discovery mid-run. So the Settings controls can read it
-// directly and the "Signals used" dropdown keeps its options during a run.
 const availability = computed(() => app.model.outputs.featureAvailability);
 
 // Preset family is the primary user-facing configuration for this block.

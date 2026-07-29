@@ -29,17 +29,17 @@ const graphState = computed({
 // Default X = the composite score, Y = Nt mutations (falling back to the first available signal
 // if that column isn't present) — a ready-to-read plot the user can re-bind to any pair.
 const defaultOptions = computed((): PredefinedGraphOption<"scatterplot">[] | undefined => {
-  const pcols = app.model.outputs.histogramPfPcols;
-  if (!pcols) return undefined;
-  const scoreCol = pcols.find((p) => p.spec.name === REPERTOIRE_SCORE_COLUMN);
-  const ntCol = pcols.find((p) => p.spec.name === NT_MUTATIONS_COLUMN);
-  const firstFeature = pcols.find((p) => p.spec.name !== REPERTOIRE_SCORE_COLUMN);
-  const yCol = ntCol ?? firstFeature;
-  if (!scoreCol) return undefined;
+  const specs = app.model.outputs.histogramPfSpecs;
+  if (!specs) return undefined;
+  const scoreSpec = specs.find((spec) => spec.name === REPERTOIRE_SCORE_COLUMN);
+  const ntSpec = specs.find((spec) => spec.name === NT_MUTATIONS_COLUMN);
+  const firstFeature = specs.find((spec) => spec.name !== REPERTOIRE_SCORE_COLUMN);
+  const ySpec = ntSpec ?? firstFeature;
+  if (!scoreSpec) return undefined;
   const opts: PredefinedGraphOption<"scatterplot">[] = [
-    { inputName: "x", selectedSource: scoreCol.spec },
+    { inputName: "x", selectedSource: scoreSpec },
   ];
-  if (yCol) opts.push({ inputName: "y", selectedSource: yCol.spec });
+  if (ySpec) opts.push({ inputName: "y", selectedSource: ySpec });
   return opts;
 });
 </script>

@@ -1,19 +1,25 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import type {
   InferOutputsType,
-  PColumnIdAndSpec,
   PColumnSpec,
   PFrameHandle,
   PlRef,
-  RenderCtxBase,
+  RelaxedColumnSelector,
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
+  Column,
+  ColumnLazy,
   ColumnsCollection,
   createPFrameForGraphs,
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
+  deriveColumnOptions,
+  isColumnLazy,
+  isPlRef,
+  parseJsonSafely,
+  withEnrichments,
 } from "@platforma-sdk/model";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 import type {
@@ -35,14 +41,19 @@ export const REPERTOIRE_SCORE_COLUMN = "pl7.app/vdj/repertoireScore";
 // The clonotype dataset this block scores — any of the three shapes (bulk /
 // single-cell / paired). All are single-cell/bulk clonotype anchors keyed on
 // (sampleId, clonotypeKey|scClonotypeKey).
-const inputAnchorSpecs = [
+// `partialAxesMatch: false` keeps the legacy selector's exact axis-set semantics: exactly
+// these two axes, in this order. The new selector schema defaults to subset matching, which
+// would also admit wider anchors.
+const inputAnchorSelectors: RelaxedColumnSelector[] = [
   {
     axes: [{ name: "pl7.app/sampleId" }, { name: "pl7.app/vdj/clonotypeKey" }],
     annotations: { "pl7.app/isAnchor": "true" },
+    partialAxesMatch: false,
   },
   {
     axes: [{ name: "pl7.app/sampleId" }, { name: "pl7.app/vdj/scClonotypeKey" }],
     annotations: { "pl7.app/isAnchor": "true" },
+    partialAxesMatch: false,
   },
 ];
 
@@ -66,6 +77,9 @@ const MUTATION_COLUMN_NAMES = new Set([
 const PGEN_COLUMN_NAME = "pl7.app/vdj/minlog10GenerationProbability";
 // Convergence signal = the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit").
 const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
+// Every name `classifyFeature` recognizes outright — the host-side pre-filter for signal
+// discovery. Abundance is not name-based, so it gets its own selector next to this one.
+const SIGNAL_COLUMN_NAMES = [PGEN_COLUMN_NAME, CONVERGENCE_FASTSTAR, ...MUTATION_COLUMN_NAMES];
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
@@ -98,23 +112,56 @@ export function isPlottableColumn(spec: PColumnSpec): boolean {
 }
 
 /**
+ * OR-list of exact-name matchers for a selector's `name` / annotation value. Exact matchers
+ * keep `.` and `/` literal — no regex escaping of column-namespace strings.
+ */
+function exactly(...values: string[]) {
+  return values.map((value) => ({ type: "exact" as const, value }));
+}
+
+/**
+ * Pool columns of the selected dataset keyed on its clonotype axis alone — the shape every
+ * per-clonotype signal has. Axis matching runs host-side, so callers narrow further with
+ * `filter()` and pay a `getSpec()` round-trip only on the survivors. `undefined` while the
+ * dataset ref is still resolving, or once it is provably gone.
+ */
+function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
+  if (ColumnLazy.getStatusByPlRef(ref) !== "present") return undefined;
+  const clonotypeAxis = Column(ref)?.getSpec().axesSpec[1];
+  if (!clonotypeAxis) return undefined;
+  return ColumnsCollection(["result_pool"]).discover({
+    anchors: { main: ref },
+    mode: "enrichment",
+    // Direct hits only — the anchored discovery this replaced never walked linkers.
+    maxHops: 0,
+    // `partialAxesMatch: false` pins the axis set to exactly this one axis, keeping
+    // per-sample columns (and anything wider) out of signal classification.
+    include: { axes: [{ name: exactly(clonotypeAxis.name) }], partialAxesMatch: false },
+  });
+}
+
+/**
  * Detect which composite signal families are present for the selected dataset, and the
  * implied preset tier. Pure spec read over the result pool — no Run required.
  */
-function detectFeatures<A, U>(
-  ctx: RenderCtxBase<A, U>,
-  ref: PlRef,
-): FeatureAvailability | undefined {
-  const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
-  if (!refSpec) return undefined;
+function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
+  const perClonotype = perClonotypeColumns(ref);
+  if (!perClonotype) return undefined;
 
-  const perClonotype =
-    ctx.resultPool.getAnchoredPColumns({ main: ref }, [{ axes: [{ anchor: "main", idx: 1 }] }]) ??
-    [];
+  // Narrow host-side to what `classifyFeature` can possibly recognize; the abundance rule
+  // compares annotation values, so those few survivors still get their spec read.
+  const candidates = perClonotype
+    .filter({
+      include: [
+        { name: exactly(...SIGNAL_COLUMN_NAMES) },
+        { annotations: { "pl7.app/isAbundance": exactly("true") } },
+      ],
+    })
+    .getColumns();
 
   const signals = new Set<SignalKind>();
-  for (const col of perClonotype) {
-    const signal = classifyFeature(col.spec);
+  for (const col of candidates) {
+    const signal = classifyFeature(col.getSpec());
     if (signal) signals.add(signal);
   }
 
@@ -231,13 +278,21 @@ export const platforma = BlockModelV3.create(dataModel)
     return { inputAnchor: data.inputAnchor };
   })
 
-  .output("inputOptions", (ctx) =>
-    ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true }),
+  // Discovery runs host-side and hands back ids; the block's own wire shape stays
+  // `{ ref, label }`, since args / enriches / the workflow bundle all want a PlRef.
+  .output("inputOptions", () =>
+    deriveColumnOptions(
+      ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
+    ).flatMap(({ id, label }) => {
+      const ref = parseJsonSafely(id);
+      if (!isPlRef(ref)) return [];
+      return [{ ref: withEnrichments(ref, true), label }];
+    }),
   )
 
   // Reactive feature/tier detection for the selected dataset (no Run needed).
-  .retentiveOutput("featureAvailability", (ctx) =>
-    ctx.data.inputAnchor ? detectFeatures(ctx, ctx.data.inputAnchor) : undefined,
+  .output("featureAvailability", (ctx) =>
+    ctx.data.inputAnchor ? detectFeatures(ctx.data.inputAnchor) : undefined,
   )
 
   // Results table: exactly Clone Id + this block's score + the metrics that fed it.
@@ -251,14 +306,16 @@ export const platforma = BlockModelV3.create(dataModel)
     const collection = ColumnsCollection([acc]);
     if (!collection.isFinal()) return undefined;
     const cols = collection.getColumns();
-    if (!cols || cols.length === 0) return undefined;
+    if (cols.length === 0) return undefined;
     // Score column anchors the rows (per-clonotype); the rest join on the shared axis.
-    const scoreCol = cols.find((c) => c.getSpec().name === "pl7.app/vdj/repertoireScore");
-    const primaryColumns = scoreCol ? [scoreCol] : [cols[0]];
-    const columns = cols.filter((c) => c !== primaryColumns[0]);
+    // Resolved by a host-side name filter, so no column pays a spec round-trip here.
+    const scoreId = collection
+      .filter({ include: { name: exactly(REPERTOIRE_SCORE_COLUMN) } })
+      .getColumnIds()[0];
+    const primary = cols.find((c) => c.id === scoreId) ?? cols[0];
     return createPlDataTableV3(ctx, {
-      primaryColumns,
-      columns,
+      primaryColumns: [primary],
+      columns: cols.filter((c) => c.id !== primary.id),
       tableState: ctx.data.tableState,
     });
   })
@@ -269,34 +326,40 @@ export const platforma = BlockModelV3.create(dataModel)
   // the metadata/linker columns for grouping are present without re-emitting any data. The
   // value picker is narrowed to score + signals UI-side by `isHistogramValueColumn`.
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
-    const pCols = ctx.outputs?.resolve("tablePf")?.getPColumns();
-    if (!pCols || pCols.length === 0) return undefined;
-    return createPFrameForGraphs(ctx, pCols);
+    const acc = ctx.outputs?.resolve("tablePf");
+    if (!acc) return undefined;
+    // `createPFrameForGraphs` still takes materialised `PColumn[]`, which only bare leaves
+    // can produce — these all are, coming straight off the block's own output accessor.
+    const leaves = ColumnsCollection([acc]).getColumns().filter(isColumnLazy);
+    if (leaves.length === 0) return undefined;
+    return createPFrameForGraphs(
+      ctx,
+      leaves.map((c) => ({ id: c.id, spec: c.getSpec(), data: c.getData() })),
+    );
   })
 
-  // Column ids/specs used by the UI to pick chart defaults (label excluded). The full pickable
-  // set is the enriched PFrame; this list carries the block's own frame columns PLUS the CDR
+  // Column specs the UI picks chart defaults from (label excluded). The full pickable set is
+  // the enriched PFrame; this list carries the block's own frame columns PLUS the CDR
   // mutation fraction column (so the Distributions plot can default to it even when the active
   // preset doesn't score it — it's still offerable via the enriched PFrame).
-  .output("histogramPfPcols", (ctx): PColumnIdAndSpec[] | undefined => {
-    const pCols = ctx.outputs?.resolve("tablePf")?.getPColumns();
-    if (!pCols) return undefined;
-    const out: PColumnIdAndSpec[] = pCols
-      .filter((c) => c.spec.name !== "pl7.app/label")
-      .map((c) => ({ columnId: c.id, spec: c.spec }));
+  .output("histogramPfSpecs", (ctx): PColumnSpec[] | undefined => {
+    const acc = ctx.outputs?.resolve("tablePf");
+    if (!acc) return undefined;
+    const specs = ColumnsCollection([acc])
+      .filter({ exclude: { name: exactly("pl7.app/label") } })
+      .getColumns()
+      .map((c) => c.getSpec());
     // Append the CDR mutation fraction column from the input pool if it isn't a scored feature,
     // so it's available as the Distributions default regardless of the resolved preset.
     const anchor = ctx.data.inputAnchor;
-    if (anchor && !out.some((p) => p.spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
-      const perClonotype =
-        ctx.resultPool.getAnchoredPColumns({ main: anchor }, [
-          { axes: [{ anchor: "main", idx: 1 }] },
-        ]) ?? [];
-      const cdr = perClonotype.find((c) => c.spec.name === CDR_MUTATION_FRACTION_COLUMN);
-      if (cdr) out.push({ columnId: cdr.id, spec: cdr.spec });
+    if (anchor && !specs.some((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
+      const cdr = perClonotypeColumns(anchor)
+        ?.filter({ include: { name: exactly(CDR_MUTATION_FRACTION_COLUMN) } })
+        .getColumns()[0];
+      if (cdr) specs.push(cdr.getSpec());
     }
-    if (out.length === 0) return undefined;
-    return out;
+    if (specs.length === 0) return undefined;
+    return specs;
   })
 
   // Diagnostic manifest of the per-column weights actually applied (post light-chain
