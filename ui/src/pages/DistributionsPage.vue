@@ -31,13 +31,13 @@ const graphState = computed({
 // fall back to the first available non-score signal if that column isn't present. The score is
 // never offered here.
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
-  const pcols = app.model.outputs.histogramPfPcols;
-  if (!pcols) return undefined;
-  const cdrCol = pcols.find((p) => p.spec.name === CDR_MUTATION_FRACTION_COLUMN);
-  const firstSignal = pcols.find((p) => p.spec.name !== REPERTOIRE_SCORE_COLUMN);
-  const valueCol = cdrCol ?? firstSignal;
-  if (!valueCol) return undefined;
-  return [{ inputName: "value", selectedSource: valueCol.spec }];
+  const specs = app.model.outputs.histogramPfSpecs;
+  if (!specs) return undefined;
+  const cdrSpec = specs.find((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN);
+  const firstSignal = specs.find((spec) => spec.name !== REPERTOIRE_SCORE_COLUMN);
+  const valueSpec = cdrSpec ?? firstSignal;
+  if (!valueSpec) return undefined;
+  return [{ inputName: "value", selectedSource: valueSpec }];
 });
 </script>
 
