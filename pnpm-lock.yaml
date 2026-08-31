@@ -201,6 +201,9 @@ importers:
       '@milaboratories/graph-maker':
         specifier: 'catalog:'
         version: 1.6.1(@milaboratories/pl-model-common@1.48.0)(@platforma-sdk/model@1.83.0)(@platforma-sdk/ui-vue@1.83.3(@bytecodealliance/preview2-shim@0.17.8)(typescript@5.6.3))(d3-dispatch@3.0.1)(d3-path@3.1.0)(d3-scale-chromatic@3.1.0)(typescript@5.6.3)
+      '@platforma-open/milaboratories.repertoire-score.kind':
+        specifier: workspace:*
+        version: link:../kind
       '@platforma-open/milaboratories.repertoire-score.model':
         specifier: workspace:*
         version: link:../model

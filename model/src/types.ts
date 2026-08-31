@@ -1,15 +1,8 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 // The scoring-configuration vocabulary lives in the kind: the kind's
-// init-params contract names these types and cannot import from the model.
-// Re-exported here so every existing importer is unaffected.
+// init-params contract names these types and a kind cannot import from the
+// model. Imported here for the types below that are composed from them.
 import type {
-  FeatureKey,
-  PresetFamily,
-  SelectableTier,
-  WeightMode,
-} from "@platforma-open/milaboratories.repertoire-score.kind";
-
-export type {
   FeatureKey,
   PresetFamily,
   SelectableTier,

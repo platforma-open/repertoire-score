@@ -24,14 +24,10 @@ import {
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 import type {
-  BlockArgs,
-  BlockData,
-  FeatureAvailability,
   FeatureKey,
-  ScoreLog,
   SelectableTier,
-  SignalKind,
-} from "./types";
+} from "@platforma-open/milaboratories.repertoire-score.kind";
+import type { BlockArgs, BlockData, FeatureAvailability, ScoreLog, SignalKind } from "./types";
 
 export * from "./presets";
 export * from "./types";

@@ -3,7 +3,7 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
-} from "@platforma-open/milaboratories.repertoire-score.model";
+} from "@platforma-open/milaboratories.repertoire-score.kind";
 import {
   defaultFeatureWeights,
   FEATURE_ORDER,

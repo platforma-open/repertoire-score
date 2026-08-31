@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@milaboratories/graph-maker": "catalog:",
+    "@platforma-open/milaboratories.repertoire-score.kind": "workspace:*",
     "@platforma-open/milaboratories.repertoire-score.model": "workspace:*",
     "@platforma-sdk/model": "catalog:",
     "@platforma-sdk/ui-vue": "catalog:",
