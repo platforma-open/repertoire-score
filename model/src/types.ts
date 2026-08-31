@@ -1,22 +1,21 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
+// The scoring-configuration vocabulary lives in the kind: the kind's
+// init-params contract names these types and cannot import from the model.
+// Re-exported here so every existing importer is unaffected.
+import type {
+  FeatureKey,
+  PresetFamily,
+  SelectableTier,
+  WeightMode,
+} from "@platforma-open/milaboratories.repertoire-score.kind";
+
+export type {
+  FeatureKey,
+  PresetFamily,
+  SelectableTier,
+  WeightMode,
+} from "@platforma-open/milaboratories.repertoire-score.kind";
 import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
-
-/**
- * Preset family = the experimental-design context the user declares. This is the primary
- * user-facing configuration; the tier and coefficients auto-resolve. Default is "standard".
- *
- * NB: "family" here means the *preset* context — NOT a signal kind. See {@link SignalKind}.
- */
-export type PresetFamily = "standard" | "antigen-selected";
-
-/**
- * A tier the user can pin in Custom mode. The baseline-absent "none" state is not
- * selectable — it means the block cannot score.
- */
-export type SelectableTier = "1" | "2a" | "2b" | "3";
-
-/** Weight-editor mode. */
-export type WeightMode = "default" | "custom";
 
 /** Unified block data (UI-editable state). */
 export type BlockData = {
@@ -70,20 +69,6 @@ export type BlockArgs = {
  * "family" is the preset context, not the signal kind.
  */
 export type SignalKind = "mutations" | "abundance" | "pgen" | "convergence";
-
-/**
- * A single composite feature — the granularity the coefficients are defined at. One signal
- * can expand to several features (mutations → 4). Grouped back to signals in the UI.
- */
-export type FeatureKey =
-  | "cdrMutationFraction"
-  | "aaMutationsCDR"
-  | "aaMutationsFWR"
-  | "ntMutations"
-  | "logCells"
-  | "negLogPgen"
-  | "negLogLightPgen"
-  | "fastStar";
 
 /**
  * Preset tier implied by which upstream signals are present. `"none"` = the MiXCR baseline
