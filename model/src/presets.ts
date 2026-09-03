@@ -1,4 +1,9 @@
-import type { FeatureKey, PresetFamily, SelectableTier, SignalKind } from "./types";
+import type {
+  FeatureKey,
+  PresetFamily,
+  SelectableTier,
+} from "@platforma-open/milaboratories.repertoire-score.kind";
+import type { SignalKind } from "./types";
 
 /** Display/editor order — grouped by signal (mutations ×4, abundance, pgen, convergence). */
 export const FEATURE_ORDER: FeatureKey[] = [

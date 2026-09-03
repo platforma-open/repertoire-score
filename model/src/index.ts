@@ -9,28 +9,25 @@ import type {
 import {
   BlockModelV3,
   Column,
-  ColumnLazy,
+  DataColumn,
   ColumnsCollection,
   createPFrameForGraphs,
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
   deriveColumnOptions,
-  isColumnLazy,
+  isDataColumn,
   isPlRef,
   parseJsonSafely,
   withEnrichments,
 } from "@platforma-sdk/model";
+import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
 import type {
-  BlockArgs,
-  BlockData,
-  FeatureAvailability,
   FeatureKey,
-  ScoreLog,
   SelectableTier,
-  SignalKind,
-} from "./types";
+} from "@platforma-open/milaboratories.repertoire-score.kind";
+import type { BlockArgs, BlockData, FeatureAvailability, ScoreLog, SignalKind } from "./types";
 
 export * from "./presets";
 export * from "./types";
@@ -126,7 +123,7 @@ function exactly(...values: string[]) {
  * dataset ref is still resolving, or once it is provably gone.
  */
 function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
-  if (ColumnLazy.getStatusByPlRef(ref) !== "present") return undefined;
+  if (DataColumn.getStatusByPlRef(ref) !== "present") return undefined;
   const clonotypeAxis = Column(ref)?.getSpec().axesSpec[1];
   if (!clonotypeAxis) return undefined;
   return ColumnsCollection(["result_pool"]).discover({
@@ -230,18 +227,21 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
   },
 });
 
-const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
-  customBlockLabel: "",
+const dataModel = new DataModelBuilder({ kind }).from<BlockData>("v1").init(({ params }) => ({
+  customBlockLabel: params?.customBlockLabel ?? "",
   defaultBlockLabel: "",
-  presetFamily: "standard",
-  tierMode: "default",
-  weightMode: "default",
+  inputAnchor: params?.inputAnchor,
+  presetFamily: params?.presetFamily ?? "standard",
+  tierMode: params?.tierMode ?? "default",
+  tier: params?.tier,
+  weightMode: params?.weightMode ?? "default",
+  customWeights: params?.customWeights,
   tableState: createPlDataTableStateV2(),
   graphStateHistogram: defaultGraphStateHistogram(),
   graphStateScatter: defaultGraphStateScatter(),
 }));
 
-export const platforma = BlockModelV3.create(dataModel)
+export const platforma = BlockModelV3.create({ dataModel, kind })
 
   .args<BlockArgs>((data) => {
     if (data.inputAnchor === undefined) throw new Error("Input dataset is required");
@@ -277,6 +277,22 @@ export const platforma = BlockModelV3.create(dataModel)
     if (data.inputAnchor === undefined) return undefined;
     return { inputAnchor: data.inputAnchor };
   })
+
+  // Inverse of the kind's init-params contract: the dataset, the subtitle and
+  // the whole scoring recipe -- the fields a user sets by hand. Unlike `args`
+  // above, the tier and weights are projected as stored rather than resolved:
+  // this is the user's configuration, not the run's. `defaultBlockLabel` is
+  // derived by a watchEffect, and the table / plot states are view state;
+  // neither is configuration a template carries.
+  .templateParams((data) => ({
+    inputAnchor: data.inputAnchor,
+    customBlockLabel: data.customBlockLabel,
+    presetFamily: data.presetFamily,
+    tierMode: data.tierMode,
+    tier: data.tier,
+    weightMode: data.weightMode,
+    customWeights: data.customWeights,
+  }))
 
   // Discovery runs host-side and hands back ids; the block's own wire shape stays
   // `{ ref, label }`, since args / enriches / the workflow bundle all want a PlRef.
@@ -330,7 +346,7 @@ export const platforma = BlockModelV3.create(dataModel)
     if (!acc) return undefined;
     // `createPFrameForGraphs` still takes materialised `PColumn[]`, which only bare leaves
     // can produce — these all are, coming straight off the block's own output accessor.
-    const leaves = ColumnsCollection([acc]).getColumns().filter(isColumnLazy);
+    const leaves = ColumnsCollection([acc]).getColumns().filter(isDataColumn);
     if (leaves.length === 0) return undefined;
     return createPFrameForGraphs(
       ctx,
