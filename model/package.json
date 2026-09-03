@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.repertoire-score.model",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "Block model",
   "type": "module",
