@@ -16,6 +16,7 @@ import {
   createPlDataTableV3,
   DataModelBuilder,
   deriveColumnOptions,
+  extractPObjectId,
   isDataColumn,
   isPlRef,
   parseJsonSafely,
@@ -27,7 +28,14 @@ import type {
   FeatureKey,
   SelectableTier,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
-import type { BlockArgs, BlockData, FeatureAvailability, ScoreLog, SignalKind } from "./types";
+import type {
+  BlockArgs,
+  BlockData,
+  BlockDataV1,
+  FeatureAvailability,
+  ScoreLog,
+  SignalKind,
+} from "./types";
 
 export * from "./presets";
 export * from "./types";
@@ -77,6 +85,11 @@ const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
 // Every name `classifyFeature` recognizes outright — the host-side pre-filter for signal
 // discovery. Abundance is not name-based, so it gets its own selector next to this one.
 const SIGNAL_COLUMN_NAMES = [PGEN_COLUMN_NAME, CONVERGENCE_FASTSTAR, ...MUTATION_COLUMN_NAMES];
+
+// Signals produced by a block OTHER than the one the input anchor comes from, so this block
+// has to depend on each of them by ref (see BlockData.optionalSignalRefs). Mutations and
+// abundance are the anchor block's own columns and ride along with the anchor ref.
+const OPTIONAL_SIGNALS: ReadonlySet<SignalKind> = new Set<SignalKind>(["pgen", "convergence"]);
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
@@ -138,8 +151,9 @@ function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
 }
 
 /**
- * Detect which composite signal families are present for the selected dataset, and the
- * implied preset tier. Pure spec read over the result pool — no Run required.
+ * Detect which composite signal families are present for the selected dataset, the implied
+ * preset tier, and the refs of the optional (cross-block) signals the block must depend on.
+ * Pure spec read over the result pool — no Run required.
  */
 function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
   const perClonotype = perClonotypeColumns(ref);
@@ -157,10 +171,19 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     .getColumns();
 
   const signals = new Set<SignalKind>();
+  // Leaf ids of the optional signals. Collected as canonical id strings so the set can be deduped and
+  // sorted into an order identical across renders.
+  const optionalIds = new Set<string>();
   for (const col of candidates) {
     const signal = classifyFeature(col.getSpec());
-    if (signal) signals.add(signal);
+    if (!signal) continue;
+    signals.add(signal);
+    if (OPTIONAL_SIGNALS.has(signal)) optionalIds.add(extractPObjectId(col.id));
   }
+  const optionalSignalRefs = [...optionalIds]
+    .sort()
+    .map((id) => parseJsonSafely<unknown>(id))
+    .filter(isPlRef);
 
   const hasMixcr = signals.has("mutations") || signals.has("abundance");
   const hasPgen = signals.has("pgen");
@@ -187,6 +210,7 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     hasMixcr,
     hasPgen,
     hasConvergence,
+    optionalSignalRefs,
   };
 }
 
@@ -227,19 +251,33 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
   },
 });
 
-const dataModel = new DataModelBuilder({ kind }).from<BlockData>("v1").init(({ params }) => ({
-  customBlockLabel: params?.customBlockLabel ?? "",
-  defaultBlockLabel: "",
-  inputAnchor: params?.inputAnchor,
-  presetFamily: params?.presetFamily ?? "standard",
-  tierMode: params?.tierMode ?? "default",
-  tier: params?.tier,
-  weightMode: params?.weightMode ?? "default",
-  customWeights: params?.customWeights,
-  tableState: createPlDataTableStateV2(),
-  graphStateHistogram: defaultGraphStateHistogram(),
-  graphStateScatter: defaultGraphStateScatter(),
-}));
+const dataModel = new DataModelBuilder({ kind })
+  .from<BlockDataV1>("v1")
+  // v1 picked the dataset with `requireEnrichments: true`, which made the block depend on
+  // every block enriching the input and re-run whenever any of them did. Strip the flag:
+  // an existing block then stops re-running on unrelated enrichments, and its stored ref
+  // still matches the (now plain) options the dropdown offers — `plRefsEqual` compares
+  // `requireEnrichments`, so leaving it on would blank the picker. `optionalSignalRefs` is
+  // deliberately left unset; the UI watcher fills it from the pool on the first render.
+  .migrate<BlockData>("v2", (v1) => ({
+    ...v1,
+    inputAnchor: v1.inputAnchor ? withEnrichments(v1.inputAnchor, false) : undefined,
+  }))
+  .init(({ params }) => ({
+    customBlockLabel: params?.customBlockLabel ?? "",
+    defaultBlockLabel: "",
+    // Normalised for the same reason as the v2 migration: a template exported from an older
+    // version of this block carries the flag.
+    inputAnchor: params?.inputAnchor ? withEnrichments(params.inputAnchor, false) : undefined,
+    presetFamily: params?.presetFamily ?? "standard",
+    tierMode: params?.tierMode ?? "default",
+    tier: params?.tier,
+    weightMode: params?.weightMode ?? "default",
+    customWeights: params?.customWeights,
+    tableState: createPlDataTableStateV2(),
+    graphStateHistogram: defaultGraphStateHistogram(),
+    graphStateScatter: defaultGraphStateScatter(),
+  }));
 
 export const platforma = BlockModelV3.create({ dataModel, kind })
 
@@ -256,6 +294,9 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
     return {
       inputAnchor: data.inputAnchor,
+      // Not read by the workflow — it is the dependency edge on the Generation Probability /
+      // Convergence blocks. See BlockArgs.optionalSignalRefs.
+      optionalSignalRefs: data.optionalSignalRefs ?? [],
       presetFamily: data.presetFamily,
       tierMode: data.tierMode,
       // Pinned tier only matters in custom mode; drop it in default so a stale
@@ -302,7 +343,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     ).flatMap(({ id, label }) => {
       const ref = parseJsonSafely(id);
       if (!isPlRef(ref)) return [];
-      return [{ ref: withEnrichments(ref, true), label }];
+      return [{ ref, label }];
     }),
   )
 

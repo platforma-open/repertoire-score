@@ -13,6 +13,12 @@ import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 /** Unified block data (UI-editable state). */
 export type BlockData = {
   inputAnchor?: PlRef;
+  /**
+   * PlRefs of the OPTIONAL upstream signal columns present for `inputAnchor`.
+   * Their presence in args is what makes the platform record this block's dependency on the
+   * blocks that produce them.
+   */
+  optionalSignalRefs?: PlRef[];
   // User-editable block label.
   customBlockLabel?: string;
   // Auto-generated default label.
@@ -41,6 +47,7 @@ export type BlockData = {
  *  the columns it actually discovers; args carries only the user's intent. */
 export type BlockArgs = {
   inputAnchor: PlRef;
+  optionalSignalRefs: PlRef[];
   presetFamily: PresetFamily;
   tierMode: "default" | "custom";
   tier?: SelectableTier;
@@ -79,7 +86,14 @@ export type FeatureAvailability = {
   hasMixcr: boolean;
   hasPgen: boolean;
   hasConvergence: boolean;
+  /** PlRefs of the optional signal columns found, canonically ordered. Mirrored into
+   *  `data.optionalSignalRefs` by the UI — see {@link BlockData.optionalSignalRefs}. */
+  optionalSignalRefs: PlRef[];
 };
+
+/** Persisted v1 shape: the input ref carried `requireEnrichments: true` and there were no
+ *  `optionalSignalRefs`. Used only by the data-model migration. */
+export type BlockDataV1 = Omit<BlockData, "optionalSignalRefs">;
 
 /** One column's entry in the score-provenance log (`scoreLog` output). */
 export type ScoreLogColumn = {
