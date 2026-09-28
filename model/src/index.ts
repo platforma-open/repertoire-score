@@ -16,10 +16,10 @@ import {
   createPlDataTableV3,
   DataModelBuilder,
   deriveColumnOptions,
+  extractPObjectId,
   isDataColumn,
   isPlRef,
   parseJsonSafely,
-  withEnrichments,
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
@@ -77,6 +77,11 @@ const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
 // Every name `classifyFeature` recognizes outright — the host-side pre-filter for signal
 // discovery. Abundance is not name-based, so it gets its own selector next to this one.
 const SIGNAL_COLUMN_NAMES = [PGEN_COLUMN_NAME, CONVERGENCE_FASTSTAR, ...MUTATION_COLUMN_NAMES];
+
+// Signals produced by a block OTHER than the one the input anchor comes from, so this block
+// has to depend on each of them by ref (see BlockData.optionalSignalRefs). Mutations and
+// abundance are the anchor block's own columns and ride along with the anchor ref.
+const OPTIONAL_SIGNALS: ReadonlySet<SignalKind> = new Set<SignalKind>(["pgen", "convergence"]);
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
@@ -138,8 +143,9 @@ function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
 }
 
 /**
- * Detect which composite signal families are present for the selected dataset, and the
- * implied preset tier. Pure spec read over the result pool — no Run required.
+ * Detect which composite signal families are present for the selected dataset, the implied
+ * preset tier, and the refs of the optional (cross-block) signals the block must depend on.
+ * Pure spec read over the result pool — no Run required.
  */
 function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
   const perClonotype = perClonotypeColumns(ref);
@@ -157,10 +163,19 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     .getColumns();
 
   const signals = new Set<SignalKind>();
+  // Leaf ids of the optional signals. Collected as canonical id strings so the set can be deduped and
+  // sorted into an order identical across renders.
+  const optionalIds = new Set<string>();
   for (const col of candidates) {
     const signal = classifyFeature(col.getSpec());
-    if (signal) signals.add(signal);
+    if (!signal) continue;
+    signals.add(signal);
+    if (OPTIONAL_SIGNALS.has(signal)) optionalIds.add(extractPObjectId(col.id));
   }
+  const optionalSignalRefs = [...optionalIds]
+    .sort()
+    .map((id) => parseJsonSafely<unknown>(id))
+    .filter(isPlRef);
 
   const hasMixcr = signals.has("mutations") || signals.has("abundance");
   const hasPgen = signals.has("pgen");
@@ -187,6 +202,8 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     hasMixcr,
     hasPgen,
     hasConvergence,
+    optionalSignalRefs,
+    anchor: ref,
   };
 }
 
@@ -227,10 +244,17 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
   },
 });
 
+// No migration step: `optionalSignalRefs` is optional, so older data is already valid. The
+// `requireEnrichments` flag on a stored anchor must NOT be stripped here — a migration cannot
+// query the pool, so it has no refs to replace that dependency with. The UI does it.
 const dataModel = new DataModelBuilder({ kind }).from<BlockData>("v1").init(({ params }) => ({
   customBlockLabel: params?.customBlockLabel ?? "",
   defaultBlockLabel: "",
+  // Taken as given: an older template's anchor carries `requireEnrichments`, and stripping
+  // it without refs to replace it would drop the dependency.
   inputAnchor: params?.inputAnchor,
+  // Present in templates written since MILAB-6993, so a seeded block starts synced.
+  optionalSignalRefs: params?.optionalSignalRefs,
   presetFamily: params?.presetFamily ?? "standard",
   tierMode: params?.tierMode ?? "default",
   tier: params?.tier,
@@ -255,7 +279,13 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     const customWeights =
       data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
     return {
+      // As stored, `requireEnrichments` and all. Never added here — only carried, until the
+      // sync in ui/src/app.ts has the refs to replace it with.
       inputAnchor: data.inputAnchor,
+      // Not read by the workflow — it is the dependency edge on the Generation Probability /
+      // Convergence blocks. Not defaulted to `[]`: undefined drops the key from the JSON
+      // args are compared by, so an unsynced block's args stay unchanged and it is not stale.
+      optionalSignalRefs: data.optionalSignalRefs,
       presetFamily: data.presetFamily,
       tierMode: data.tierMode,
       // Pinned tier only matters in custom mode; drop it in default so a stale
@@ -286,6 +316,10 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   // neither is configuration a template carries.
   .templateParams((data) => ({
     inputAnchor: data.inputAnchor,
+    // Not user configuration, but a template restores dependencies too: the formula records
+    // WHICH signals were scored, only a ref names the block supplying one. Applying the
+    // template repoints each ref at the new project.
+    optionalSignalRefs: data.optionalSignalRefs,
     customBlockLabel: data.customBlockLabel,
     presetFamily: data.presetFamily,
     tierMode: data.tierMode,
@@ -302,7 +336,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     ).flatMap(({ id, label }) => {
       const ref = parseJsonSafely(id);
       if (!isPlRef(ref)) return [];
-      return [{ ref: withEnrichments(ref, true), label }];
+      return [{ ref, label }];
     }),
   )
 

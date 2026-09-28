@@ -13,6 +13,16 @@ import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 /** Unified block data (UI-editable state). */
 export type BlockData = {
   inputAnchor?: PlRef;
+  /**
+   * PlRefs of the OPTIONAL upstream signal columns present for `inputAnchor`.
+   * Their presence in args is what makes the platform record this block's dependency on the
+   * blocks that produce them.
+   *
+   * `undefined` means never synced, and is NOT `[]` (synced, found none). Such a block still
+   * carries `requireEnrichments` on `inputAnchor`; the UI drops that flag in the same write
+   * that fills these in.
+   */
+  optionalSignalRefs?: PlRef[];
   // User-editable block label.
   customBlockLabel?: string;
   // Auto-generated default label.
@@ -41,6 +51,8 @@ export type BlockData = {
  *  the columns it actually discovers; args carries only the user's intent. */
 export type BlockArgs = {
   inputAnchor: PlRef;
+  /** Absent while never synced. */
+  optionalSignalRefs?: PlRef[];
   presetFamily: PresetFamily;
   tierMode: "default" | "custom";
   tier?: SelectableTier;
@@ -79,6 +91,12 @@ export type FeatureAvailability = {
   hasMixcr: boolean;
   hasPgen: boolean;
   hasConvergence: boolean;
+  /** PlRefs of the optional signal columns found, canonically ordered. Mirrored into
+   *  `data.optionalSignalRefs` by the UI — see {@link BlockData.optionalSignalRefs}. */
+  optionalSignalRefs: PlRef[];
+  /** The anchor these facts describe. Recomputed a render after `data.inputAnchor` changes,
+   *  so the UI checks it before mirroring refs that may belong to the previous dataset. */
+  anchor: PlRef;
 };
 
 /** One column's entry in the score-provenance log (`scoreLog` output). */
