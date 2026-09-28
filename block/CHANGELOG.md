@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 1.1.1
+
+### Patch Changes
+
+- 9156ffc: Update SDK: PlAgDataTable no longer recreates its grid in an endless loop
+
 ## 1.1.0
 
 ### Minor Changes
