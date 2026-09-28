@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 1.2.0
+
+### Minor Changes
+
+- 220ad3d: Avoid re-run triggered by moving unrelated blocks
+
 ## 1.1.1
 
 ### Patch Changes
