@@ -20,7 +20,6 @@ import {
   isDataColumn,
   isPlRef,
   parseJsonSafely,
-  withEnrichments,
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
@@ -28,14 +27,7 @@ import type {
   FeatureKey,
   SelectableTier,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
-import type {
-  BlockArgs,
-  BlockData,
-  BlockDataV1,
-  FeatureAvailability,
-  ScoreLog,
-  SignalKind,
-} from "./types";
+import type { BlockArgs, BlockData, FeatureAvailability, ScoreLog, SignalKind } from "./types";
 
 export * from "./presets";
 export * from "./types";
@@ -211,6 +203,7 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     hasPgen,
     hasConvergence,
     optionalSignalRefs,
+    anchor: ref,
   };
 }
 
@@ -251,33 +244,26 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
   },
 });
 
-const dataModel = new DataModelBuilder({ kind })
-  .from<BlockDataV1>("v1")
-  // v1 picked the dataset with `requireEnrichments: true`, which made the block depend on
-  // every block enriching the input and re-run whenever any of them did. Strip the flag:
-  // an existing block then stops re-running on unrelated enrichments, and its stored ref
-  // still matches the (now plain) options the dropdown offers — `plRefsEqual` compares
-  // `requireEnrichments`, so leaving it on would blank the picker. `optionalSignalRefs` is
-  // deliberately left unset; the UI watcher fills it from the pool on the first render.
-  .migrate<BlockData>("v2", (v1) => ({
-    ...v1,
-    inputAnchor: v1.inputAnchor ? withEnrichments(v1.inputAnchor, false) : undefined,
-  }))
-  .init(({ params }) => ({
-    customBlockLabel: params?.customBlockLabel ?? "",
-    defaultBlockLabel: "",
-    // Normalised for the same reason as the v2 migration: a template exported from an older
-    // version of this block carries the flag.
-    inputAnchor: params?.inputAnchor ? withEnrichments(params.inputAnchor, false) : undefined,
-    presetFamily: params?.presetFamily ?? "standard",
-    tierMode: params?.tierMode ?? "default",
-    tier: params?.tier,
-    weightMode: params?.weightMode ?? "default",
-    customWeights: params?.customWeights,
-    tableState: createPlDataTableStateV2(),
-    graphStateHistogram: defaultGraphStateHistogram(),
-    graphStateScatter: defaultGraphStateScatter(),
-  }));
+// No migration step: `optionalSignalRefs` is optional, so older data is already valid. The
+// `requireEnrichments` flag on a stored anchor must NOT be stripped here — a migration cannot
+// query the pool, so it has no refs to replace that dependency with. The UI does it.
+const dataModel = new DataModelBuilder({ kind }).from<BlockData>("v1").init(({ params }) => ({
+  customBlockLabel: params?.customBlockLabel ?? "",
+  defaultBlockLabel: "",
+  // Taken as given: an older template's anchor carries `requireEnrichments`, and stripping
+  // it without refs to replace it would drop the dependency.
+  inputAnchor: params?.inputAnchor,
+  // Present in templates written since MILAB-6993, so a seeded block starts synced.
+  optionalSignalRefs: params?.optionalSignalRefs,
+  presetFamily: params?.presetFamily ?? "standard",
+  tierMode: params?.tierMode ?? "default",
+  tier: params?.tier,
+  weightMode: params?.weightMode ?? "default",
+  customWeights: params?.customWeights,
+  tableState: createPlDataTableStateV2(),
+  graphStateHistogram: defaultGraphStateHistogram(),
+  graphStateScatter: defaultGraphStateScatter(),
+}));
 
 export const platforma = BlockModelV3.create({ dataModel, kind })
 
@@ -293,10 +279,13 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     const customWeights =
       data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
     return {
+      // As stored, `requireEnrichments` and all. Never added here — only carried, until the
+      // sync in ui/src/app.ts has the refs to replace it with.
       inputAnchor: data.inputAnchor,
       // Not read by the workflow — it is the dependency edge on the Generation Probability /
-      // Convergence blocks. See BlockArgs.optionalSignalRefs.
-      optionalSignalRefs: data.optionalSignalRefs ?? [],
+      // Convergence blocks. Not defaulted to `[]`: undefined drops the key from the JSON
+      // args are compared by, so an unsynced block's args stay unchanged and it is not stale.
+      optionalSignalRefs: data.optionalSignalRefs,
       presetFamily: data.presetFamily,
       tierMode: data.tierMode,
       // Pinned tier only matters in custom mode; drop it in default so a stale
@@ -327,6 +316,10 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   // neither is configuration a template carries.
   .templateParams((data) => ({
     inputAnchor: data.inputAnchor,
+    // Not user configuration, but a template restores dependencies too: the formula records
+    // WHICH signals were scored, only a ref names the block supplying one. Applying the
+    // template repoints each ref at the new project.
+    optionalSignalRefs: data.optionalSignalRefs,
     customBlockLabel: data.customBlockLabel,
     presetFamily: data.presetFamily,
     tierMode: data.tierMode,

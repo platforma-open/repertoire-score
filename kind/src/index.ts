@@ -24,6 +24,10 @@ export { FEATURE_KEYS, PRESET_FAMILIES, SELECTABLE_TIERS, WEIGHT_MODES } from ".
  */
 export type BlockParams = {
   inputAnchor?: PlRef;
+  /** Optional signal columns (Generation Probability, Convergence) the score draws on.
+   *  In the contract so a template restores the block's dependencies, not just its
+   *  settings; applying it repoints each ref at the new project's blocks. */
+  optionalSignalRefs?: PlRef[];
   customBlockLabel?: string;
   presetFamily?: PresetFamily;
   tierMode?: WeightMode;
@@ -36,14 +40,23 @@ export type BlockParams = {
 function parseInitializationParams(value: unknown): BlockParams {
   assertParamsObject(value);
 
-  const { inputAnchor, customBlockLabel, presetFamily, tierMode, tier, weightMode, customWeights } =
-    value;
+  const {
+    inputAnchor,
+    optionalSignalRefs,
+    customBlockLabel,
+    presetFamily,
+    tierMode,
+    tier,
+    weightMode,
+    customWeights,
+  } = value;
 
   if (inputAnchor !== undefined && !isPlRef(inputAnchor)) {
     throw new Error(
       "'inputAnchor' must be a reference to an upstream column, written as { block, name }.",
     );
   }
+  if (optionalSignalRefs !== undefined) assertPlRefArray(optionalSignalRefs, "optionalSignalRefs");
   if (customBlockLabel !== undefined && typeof customBlockLabel !== "string") {
     throw new Error("'customBlockLabel' must be a string.");
   }
@@ -56,6 +69,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   return {
     inputAnchor,
+    optionalSignalRefs,
     customBlockLabel,
     presetFamily: presetFamily as PresetFamily | undefined,
     tierMode: tierMode as WeightMode | undefined,
@@ -63,6 +77,20 @@ function parseInitializationParams(value: unknown): BlockParams {
     weightMode: weightMode as WeightMode | undefined,
     customWeights,
   };
+}
+
+/** `[]` (looked, found none) and absent (never looked) both valid, and not the same. */
+function assertPlRefArray(value: unknown, field: string): asserts value is PlRef[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`'${field}' must be an array of references to upstream columns.`);
+  }
+  for (const [i, ref] of value.entries()) {
+    if (!isPlRef(ref)) {
+      throw new Error(
+        `'${field}[${i}]' must be a reference to an upstream column, written as { block, name }.`,
+      );
+    }
+  }
 }
 
 function assertOneOf(value: unknown, allowed: readonly string[], field: string) {

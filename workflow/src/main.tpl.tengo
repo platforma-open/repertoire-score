@@ -58,6 +58,13 @@ LIGHT_BULK_CHAINS := { "IGLight": true, "IGKappa": true, "IGLambda": true }
 // Tier -> preset-id variant tag.
 TIER_VARIANT := { "1": "mutations", "2a": "convergence", "2b": "pgen", "3": "full" }
 
+// Optional signals each tier scores on top of the MiXCR floor. Mirrors the model's
+// reachableTiers gate (model/src/index.ts detectFeatures).
+TIER_REQUIRES := { "1": [], "2a": ["convergence"], "2b": ["pgen"], "3": ["pgen", "convergence"] }
+
+// Block supplying each signal. Same names the UI's "run above" suggestion uses.
+SIGNAL_SOURCE := { "pgen": "Generation Probability", "convergence": "Convergence Score" }
+
 // Classify one upstream column into { fk, transform } or undefined.
 //   transform: "identity" | "log1p" | "hitFlag" — analysis mapping applied in pt.
 classify := func(col) {
@@ -216,8 +223,6 @@ wf.body(func(args) {
 		ll.assert(!is_undefined(args.tier), "custom scoring-signals mode requires a pinned tier")
 		tier = args.tier
 	} else {
-		ll.assert(hasMixcr,
-			"input dataset carries no MiXCR mutation/abundance columns — the composite score cannot be computed")
 		if hasPgen && hasConvergence {
 			tier = "3"
 		} else if hasPgen {
@@ -227,6 +232,17 @@ wf.body(func(args) {
 		} else {
 			tier = "1"
 		}
+	}
+
+	// --- The resolved tier must be backed by columns that actually arrived. ---
+	ll.assert(hasMixcr,
+		"input dataset carries no MiXCR mutation/abundance columns — the composite score cannot be computed")
+	required := TIER_REQUIRES[tier]
+	ll.assert(!is_undefined(required), "no signal requirement declared for tier %s", tier)
+	for sig in required {
+		ll.assert(presentSignals[sig] == true,
+			"scoring formula \"%s\" needs the %s signal, but no %s column reached this run. Run the %s block above this one, or switch the formula back to Default.",
+			tier, sig, sig, SIGNAL_SOURCE[sig])
 	}
 
 	// --- Resolve coefficients: preset tier row, with optional per-feature custom overrides. ---
