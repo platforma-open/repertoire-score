@@ -98,7 +98,7 @@ export const SUBSET_DOMAIN = "pl7.app/subset";
 export const columnIdFromPlRef = (ref: PlRef): string =>
   JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
 
-type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKind };
+export type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKind };
 
 /**
  * Which Pgen and convergence columns a run on `subsetId` may use (undefined = full data).
@@ -110,7 +110,7 @@ type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKind };
  *
  * The workflow applies the same rules (main.tpl.tengo), so the tier shown here is the tier run.
  */
-function applySubsetRules(
+export function applySubsetRules(
   candidates: SignalCandidate[],
   subsetId: string | undefined,
 ): SignalCandidate[] {
