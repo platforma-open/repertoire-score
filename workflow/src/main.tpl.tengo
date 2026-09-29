@@ -373,6 +373,10 @@ wf.body(func(args) {
 		}
 	}
 	scoreDomain["pl7.app/vdj/repertoireScore/preset"] = presetId
+	// Add subset column's id in the domain so that other blocks can trace it.
+	if !is_undefined(args.inputFilter) {
+		scoreDomain[SUBSET_DOMAIN] = args.inputFilter
+	}
 
 	scoreSpec := {
 		kind: "PColumn",
