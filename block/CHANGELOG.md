@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 1.3.0
+
+### Minor Changes
+
+- 682aa51: Accept filtered inputs
+
 ## 1.2.0
 
 ### Minor Changes

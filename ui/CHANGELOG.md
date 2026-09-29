@@ -1,5 +1,17 @@
 # @platforma-open/milaboratories.repertoire-score.ui
 
+## 1.2.0
+
+### Minor Changes
+
+- 682aa51: Accept filtered inputs
+
+### Patch Changes
+
+- Updated dependencies [682aa51]
+  - @platforma-open/milaboratories.repertoire-score.model@1.3.0
+  - @platforma-open/milaboratories.repertoire-score.kind@1.2.0
+
 ## 1.1.0
 
 ### Minor Changes
