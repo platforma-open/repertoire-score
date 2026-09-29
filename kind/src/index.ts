@@ -24,6 +24,8 @@ export { FEATURE_KEYS, PRESET_FAMILIES, SELECTABLE_TIERS, WEIGHT_MODES } from ".
  */
 export type BlockParams = {
   inputAnchor?: PlRef;
+  /** A `pl7.app/isSubset` column restricting the dataset's clonotypes. */
+  filterRef?: PlRef;
   /** Optional signal columns (Generation Probability, Convergence) the score draws on.
    *  In the contract so a template restores the block's dependencies, not just its
    *  settings; applying it repoints each ref at the new project's blocks. */
@@ -42,6 +44,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   const {
     inputAnchor,
+    filterRef,
     optionalSignalRefs,
     customBlockLabel,
     presetFamily,
@@ -54,6 +57,11 @@ function parseInitializationParams(value: unknown): BlockParams {
   if (inputAnchor !== undefined && !isPlRef(inputAnchor)) {
     throw new Error(
       "'inputAnchor' must be a reference to an upstream column, written as { block, name }.",
+    );
+  }
+  if (filterRef !== undefined && !isPlRef(filterRef)) {
+    throw new Error(
+      "'filterRef' must be a reference to an upstream column, written as { block, name }.",
     );
   }
   if (optionalSignalRefs !== undefined) assertPlRefArray(optionalSignalRefs, "optionalSignalRefs");
@@ -69,6 +77,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   return {
     inputAnchor,
+    filterRef,
     optionalSignalRefs,
     customBlockLabel,
     presetFamily: presetFamily as PresetFamily | undefined,

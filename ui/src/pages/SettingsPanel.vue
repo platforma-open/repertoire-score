@@ -8,13 +8,19 @@ import {
   defaultFeatureWeights,
   FEATURE_ORDER,
 } from "@platforma-open/milaboratories.repertoire-score.model";
-import { plRefsEqual } from "@platforma-sdk/model";
+import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
+import {
+  createDatasetSelection,
+  createPrimaryRef,
+  plRefsEqual,
+  withEnrichments,
+} from "@platforma-sdk/model";
 import {
   PlAlert,
   PlBtnGhost,
   PlBtnGroup,
+  PlDatasetSelector,
   PlDropdown,
-  PlDropdownRef,
   PlMaskIcon24,
   PlSectionSeparator,
   PlTooltip,
@@ -131,12 +137,38 @@ const resolvedTier = computed<SelectableTier | undefined>(() => {
   return a.tier;
 });
 
+// The selector picks a dataset, or a dataset narrowed by one of its subset columns. The stored
+// anchor may still carry `requireEnrichments` until the signal sync drops it; the options never
+// do, so it is left out of the displayed value.
+const datasetSelection = computed<DatasetSelection | undefined>({
+  get: () => {
+    const { inputAnchor, filterRef } = app.model.data;
+    if (inputAnchor === undefined) return undefined;
+    return createDatasetSelection(createPrimaryRef(withEnrichments(inputAnchor, false), filterRef));
+  },
+  set: (selection) => {
+    app.model.data.inputAnchor = selection?.primary.column;
+    app.model.data.filterRef = selection?.primary.filter;
+  },
+});
+
+// The picked entry's label: the subset's when one is picked (its label already carries the
+// dataset as a prefix), else the dataset's.
+const labelFor = (ref: PlRef, filter: PlRef | undefined): string => {
+  const option = (app.model.outputs.inputOptions ?? []).find((o) =>
+    plRefsEqual(o.primary.ref, ref, true),
+  );
+  if (filter !== undefined) {
+    const filterLabel = option?.filters?.find((f) => plRefsEqual(f.ref, filter, true))?.label;
+    if (filterLabel !== undefined) return filterLabel;
+  }
+  return option?.primary.label ?? "";
+};
+
 // Keep the auto block-label default in sync: "<dataset> · <scoring formula variables>".
 watchEffect(() => {
   const ref = app.model.data.inputAnchor;
-  const dataset = ref
-    ? ((app.model.outputs.inputOptions ?? []).find((o) => plRefsEqual(o.ref, ref))?.label ?? "")
-    : "";
+  const dataset = ref ? labelFor(ref, app.model.data.filterRef) : "";
   const tier = resolvedTier.value;
   app.model.data.defaultBlockLabel =
     dataset && tier ? `${dataset} · ${TIER_LABELS[tier]}` : dataset;
@@ -202,15 +234,15 @@ function onCoefInput(feature: FeatureKey, event: Event) {
 </script>
 
 <template>
-  <PlDropdownRef
-    v-model="app.model.data.inputAnchor"
-    :options="app.model.outputs.inputOptions ?? []"
+  <PlDatasetSelector
+    v-model="datasetSelection"
+    :options="app.model.outputs.inputOptions"
     label="Input dataset"
     clearable
     required
   >
     <template #tooltip> MiXCR clonotyping output to score. </template>
-  </PlDropdownRef>
+  </PlDatasetSelector>
 
   <PlDropdown v-model="app.model.data.presetFamily" :options="familyOptions" label="Preset family">
     <template #tooltip>

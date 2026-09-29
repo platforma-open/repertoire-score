@@ -21,6 +21,7 @@ wf := import("@platforma-sdk/workflow-tengo:workflow")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 ll := import("@platforma-sdk/workflow-tengo:ll")
+json := import("json")
 smart := import("@platforma-sdk/workflow-tengo:smart")
 constants := import("@platforma-sdk/workflow-tengo:constants")
 canonical := import("@platforma-sdk/workflow-tengo:canonical")
@@ -44,6 +45,9 @@ ABUNDANCE_NORM_ANN := "pl7.app/abundance/normalized"
 SC_CHAIN_DOMAIN := "pl7.app/vdj/scClonotypeChain"
 CHAIN_DOMAIN := "pl7.app/vdj/chain"
 RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
+// Stamped by Generation Probability / Clonotype Convergence on columns computed on a subset of
+// the dataset. Its value is the subset column's id, the same string as args.inputFilter.
+SUBSET_DOMAIN := "pl7.app/subset"
 
 // The feature->signal map and the canonical feature order come from args
 // (args.featureSignal / args.featureOrder) — single source of truth in the model's
@@ -171,6 +175,11 @@ wf.prepare(func(args) {
 	// the candidate composite features.
 	bb.addMulti({ axes: [{ anchor: "main", idx: 1 }] }, "features")
 
+	// Optional subset column picked alongside the dataset (PlDatasetSelector)
+	if !is_undefined(args.inputFilter) {
+		bb.addRef(json.decode(args.inputFilter))
+	}
+
 	return { columns: bb.build() }
 })
 
@@ -180,11 +189,30 @@ wf.body(func(args) {
 	keyAxisSpec := datasetSpec.axesSpec[1]
 	isSingleCell := keyAxisSpec.name == "pl7.app/vdj/scClonotypeKey"
 
+	// The subset a column was computed on (undefined = full data).
+	subsetOf := func(col) {
+		if is_undefined(col.spec.domain) {
+			return undefined
+		}
+		return col.spec.domain[SUBSET_DOMAIN]
+	}
+
 	// --- Classify discovered columns into slots[slot][featureKey] = { col, transform }. ---
 	slots := {}
 	for col in columns.getColumns("features") {
 		cl := classify(col)
 		if is_undefined(cl) {
+			continue
+		}
+		// Skip what this block must never use.
+		// Convergence only from a run on this block's own input
+		sub := subsetOf(col)
+		if cl.fk == "fastStar" && sub != args.inputFilter {
+			continue
+		}
+		// Pgen from a run on the same subset, or on the full data (Pgen is
+		// per sequence, so the subset's values are the same).
+		if cl.fk == "negLogPgen" && !is_undefined(sub) && sub != args.inputFilter {
 			continue
 		}
 		slot := slotOf(col, isSingleCell)
@@ -196,6 +224,19 @@ wf.body(func(args) {
 		// block emitted duplicate or ambiguous per-chain columns (e.g. two abundance totals,
 		// or heavy+light sharing a slot) — fail loudly rather than silently keep the last.
 		existing := slots[slot][cl.fk]
+		// The one expected pair: a full-data and a subset Pgen for the same chain. The subset's wins.
+		if !is_undefined(existing) && cl.fk == "negLogPgen" && !is_undefined(args.inputFilter) {
+			existingSub := subsetOf(existing.col)
+			// stored: full, new: subset (replace)
+			if is_undefined(existingSub) && sub == args.inputFilter {
+				slots[slot][cl.fk] = { col: col, transform: cl.transform }
+				continue
+			}
+			// stored: subset, new: full (keep stored)
+			if existingSub == args.inputFilter && is_undefined(sub) {
+				continue
+			}
+		}
 		if !is_undefined(existing) {
 			ll.panic("repertoire-score: two columns map to feature %s in slot %s: %s and %s — refusing to silently pick one",
 				cl.fk, slot, existing.col.spec.name, col.spec.name)
@@ -348,7 +389,15 @@ wf.body(func(args) {
 		}
 	}
 
-	scoreResult := computeScore.computeScore(inputCols, keyAxisSpec, scoreSpec, CONV_FASTSTAR)
+	// Optional subset filter: only its clonotypes are scored, so the percentile ranks are
+	// taken within the subset.
+	filterColumn := undefined
+	if !is_undefined(args.inputFilter) {
+		f := columns.getColumn(json.decode(args.inputFilter))
+		filterColumn = { spec: f.spec, data: f.data }
+	}
+
+	scoreResult := computeScore.computeScore(inputCols, keyAxisSpec, scoreSpec, CONV_FASTSTAR, filterColumn)
 	scoreCol := scoreResult.score
 
 	// --- Inject provenance trace and export. ---
@@ -356,7 +405,13 @@ wf.body(func(args) {
 	if !is_undefined(datasetSpec.annotations) && !is_undefined(datasetSpec.annotations["pl7.app/label"]) {
 		traceLabel = datasetSpec.annotations["pl7.app/label"]
 	}
-	trace := pSpec.makeTrace(datasetSpec, {
+	// With a subset filter the trace roots in the filter: its own trace is dataset -> the
+	// block that made the subset (e.g. Repertoire Labeling), so downstream labels name it.
+	traceSourceSpec := datasetSpec
+	if !is_undefined(filterColumn) {
+		traceSourceSpec = filterColumn.spec
+	}
+	trace := pSpec.makeTrace(traceSourceSpec, {
 		type: "milaboratories.repertoire-score",
 		importance: 30,
 		label: traceLabel

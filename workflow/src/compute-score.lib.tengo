@@ -36,10 +36,12 @@ GRP := "__grp"
 * @param convColName - the convergence hit column name (matched on spec.name). Its null
 *                      clonotypes are treated as "Not hit": filled 0 for the score, shown
 *                      "Not hit" in the table — never median-imputed.
+* @param filterArg   - optional `pl7.app/isSubset` column ({ spec, data }) on the key axis:
+*                      only its clonotypes are scored, so the ranks are taken within them.
 * @return { score: <score PColumn>, hitDisplays: map of convergence in-frame header ->
 *          its "Hit"/"Not hit" display PColumn (nulls backfilled to "Not hit") }.
 */
-computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName) {
+computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterArg) {
 	ll.assert(len(inputCols) > 0, "computeScore: no feature columns to score")
 
 	ptWf := pt.workflow().cpu(1).mem("4GiB")
@@ -67,7 +69,13 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName) {
 		}
 		selectExprs = append(selectExprs, e.alias(c.header))
 	}
-	df := ptWf.frame(pt.p.full(entries...)).select(selectExprs...)
+	// Optional subset filter (a `pl7.app/isSubset` column on the key axis): an inner join
+	// keeps only its clonotypes. The select leaves the filter column itself out.
+	frameInput := pt.p.full(entries...)
+	if len(filterArg) > 0 && !is_undefined(filterArg[0]) {
+		frameInput = pt.p.inner(frameInput, pt.p.column("subsetFilter", filterArg[0]))
+	}
+	df := ptWf.frame(frameInput).select(selectExprs...)
 
 	// Single global group for every subsequent window op.
 	df = df.withColumns(pt.lit(1).alias(GRP))

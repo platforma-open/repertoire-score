@@ -14,6 +14,12 @@ import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 export type BlockData = {
   inputAnchor?: PlRef;
   /**
+   * Optional `pl7.app/isSubset` column picked alongside the dataset (e.g. a repertoire-labeling
+   * label). Only clonotypes present in it are scored, and only signals computed on the same
+   * subset (or, for Pgen, on the full data) are used.
+   */
+  filterRef?: PlRef;
+  /**
    * PlRefs of the OPTIONAL upstream signal columns present for `inputAnchor`.
    * Their presence in args is what makes the platform record this block's dependency on the
    * blocks that produce them.
@@ -51,6 +57,8 @@ export type BlockData = {
  *  the columns it actually discovers; args carries only the user's intent. */
 export type BlockArgs = {
   inputAnchor: PlRef;
+  /** `filterRef` as its column id: the form upstream blocks stamp as `pl7.app/subset`. */
+  inputFilter?: string;
   /** Absent while never synced. */
   optionalSignalRefs?: PlRef[];
   presetFamily: PresetFamily;
@@ -97,6 +105,9 @@ export type FeatureAvailability = {
   /** The anchor these facts describe. Recomputed a render after `data.inputAnchor` changes,
    *  so the UI checks it before mirroring refs that may belong to the previous dataset. */
   anchor: PlRef;
+  /** The subset filter (column id) these facts were computed for, undefined for full data.
+   *  Checked like `anchor`: a filter change also changes which signals count. */
+  subsetId?: string;
 };
 
 /** One column's entry in the score-provenance log (`scoreLog` output). */

@@ -1,5 +1,6 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import type {
+  DatasetOption,
   InferOutputsType,
   PColumnSpec,
   PFrameHandle,
@@ -8,6 +9,7 @@ import type {
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
+  buildDatasetOptions,
   Column,
   DataColumn,
   ColumnsCollection,
@@ -18,8 +20,10 @@ import {
   deriveColumnOptions,
   extractPObjectId,
   isDataColumn,
+  isPColumnSpec,
   isPlRef,
   parseJsonSafely,
+  plRefsEqual,
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
@@ -82,6 +86,58 @@ const SIGNAL_COLUMN_NAMES = [PGEN_COLUMN_NAME, CONVERGENCE_FASTSTAR, ...MUTATION
 // has to depend on each of them by ref (see BlockData.optionalSignalRefs). Mutations and
 // abundance are the anchor block's own columns and ride along with the anchor ref.
 const OPTIONAL_SIGNALS: ReadonlySet<SignalKind> = new Set<SignalKind>(["pgen", "convergence"]);
+
+// Domain key a block stamps on columns it computed on a subset of its dataset (Generation
+// Probability, Clonotype Convergence). Its value is the subset column's id.
+export const SUBSET_DOMAIN = "pl7.app/subset";
+
+/**
+ * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). It is the
+ * form `pl7.app/subset` carries, so this block's own filter can be compared with it.
+ */
+export const columnIdFromPlRef = (ref: PlRef): string =>
+  JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
+
+type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKind };
+
+/**
+ * Which Pgen and convergence columns a run on `subsetId` may use (undefined = full data).
+ *
+ * - Convergence only from a run on the same input: its hits depend on which clonotypes were in.
+ * - Pgen from a run on the same subset, or on the full data: Pgen is per sequence, so full-data
+ *   values are the same for the subset's clonotypes. Where both exist for one chain, the
+ *   subset's wins.
+ *
+ * The workflow applies the same rules (main.tpl.tengo), so the tier shown here is the tier run.
+ */
+function applySubsetRules(
+  candidates: SignalCandidate[],
+  subsetId: string | undefined,
+): SignalCandidate[] {
+  const subsetOf = (c: SignalCandidate) => c.spec.domain?.[SUBSET_DOMAIN];
+  const allowed = candidates.filter((c) => {
+    if (c.signal === "convergence") return subsetOf(c) === subsetId;
+    if (c.signal === "pgen") return subsetOf(c) === undefined || subsetOf(c) === subsetId;
+    return true;
+  });
+  if (subsetId === undefined) return allowed;
+  // The column's identity without the subset stamp: same name and chain, full vs subset run.
+  const sansSubset = (c: SignalCandidate) =>
+    c.spec.name +
+    JSON.stringify(
+      Object.entries(c.spec.domain ?? {})
+        .filter(([key]) => key !== SUBSET_DOMAIN)
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+  // find which chains have a subset Pgen.
+  const subsetPgen = new Set(
+    allowed.filter((c) => c.signal === "pgen" && subsetOf(c) === subsetId).map(sansSubset),
+  );
+  // drop the full-data Pgen for exactly those chains.
+  return allowed.filter(
+    (c) => !(c.signal === "pgen" && subsetOf(c) === undefined && subsetPgen.has(sansSubset(c))),
+  );
+}
 
 /** Classify one upstream column spec into a composite signal kind, or undefined. */
 function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
@@ -147,7 +203,7 @@ function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
  * preset tier, and the refs of the optional (cross-block) signals the block must depend on.
  * Pure spec read over the result pool — no Run required.
  */
-function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
+function detectFeatures(ref: PlRef, subsetId?: string): FeatureAvailability | undefined {
   const perClonotype = perClonotypeColumns(ref);
   if (!perClonotype) return undefined;
 
@@ -162,15 +218,19 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     })
     .getColumns();
 
+  const classified = candidates.flatMap((col) => {
+    const spec = col.getSpec();
+    const signal = classifyFeature(spec);
+    return signal ? [{ id: extractPObjectId(col.id), spec, signal }] : [];
+  });
+
   const signals = new Set<SignalKind>();
   // Leaf ids of the optional signals. Collected as canonical id strings so the set can be deduped and
   // sorted into an order identical across renders.
   const optionalIds = new Set<string>();
-  for (const col of candidates) {
-    const signal = classifyFeature(col.getSpec());
-    if (!signal) continue;
+  for (const { id, signal } of applySubsetRules(classified, subsetId)) {
     signals.add(signal);
-    if (OPTIONAL_SIGNALS.has(signal)) optionalIds.add(extractPObjectId(col.id));
+    if (OPTIONAL_SIGNALS.has(signal)) optionalIds.add(id);
   }
   const optionalSignalRefs = [...optionalIds]
     .sort()
@@ -204,6 +264,7 @@ function detectFeatures(ref: PlRef): FeatureAvailability | undefined {
     hasConvergence,
     optionalSignalRefs,
     anchor: ref,
+    ...(subsetId !== undefined && { subsetId }),
   };
 }
 
@@ -253,6 +314,7 @@ const dataModel = new DataModelBuilder({ kind }).from<BlockData>("v1").init(({ p
   // Taken as given: an older template's anchor carries `requireEnrichments`, and stripping
   // it without refs to replace it would drop the dependency.
   inputAnchor: params?.inputAnchor,
+  filterRef: params?.filterRef,
   // Present in templates written since MILAB-6993, so a seeded block starts synced.
   optionalSignalRefs: params?.optionalSignalRefs,
   presetFamily: params?.presetFamily ?? "standard",
@@ -282,6 +344,9 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       // As stored, `requireEnrichments` and all. Never added here — only carried, until the
       // sync in ui/src/app.ts has the refs to replace it with.
       inputAnchor: data.inputAnchor,
+      // Column-id form, like the `pl7.app/subset` stamps it is compared with. Absent without a
+      // filter, so an unfiltered block's args are unchanged.
+      ...(data.filterRef !== undefined && { inputFilter: columnIdFromPlRef(data.filterRef) }),
       // Not read by the workflow — it is the dependency edge on the Generation Probability /
       // Convergence blocks. Not defaulted to `[]`: undefined drops the key from the JSON
       // args are compared by, so an unsynced block's args stay unchanged and it is not stale.
@@ -316,6 +381,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   // neither is configuration a template carries.
   .templateParams((data) => ({
     inputAnchor: data.inputAnchor,
+    filterRef: data.filterRef,
     // Not user configuration, but a template restores dependencies too: the formula records
     // WHICH signals were scored, only a ref names the block supplying one. Applying the
     // template repoints each ref at the new project.
@@ -330,19 +396,43 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
 
   // Discovery runs host-side and hands back ids; the block's own wire shape stays
   // `{ ref, label }`, since args / enriches / the workflow bundle all want a PlRef.
-  .output("inputOptions", () =>
-    deriveColumnOptions(
+  .output("inputOptions", (ctx): DatasetOption[] => {
+    // Subset columns (`pl7.app/isSubset`) on each dataset's axes, e.g. repertoire-labeling
+    // labels or Lead Selection picks. Only the filters are taken from here: its primary refs
+    // carry `requireEnrichments`, which this block deliberately avoids (see
+    // BlockData.optionalSignalRefs). The primary predicate only has to cover the datasets below:
+    // results are matched to them by ref.
+    const withFilters =
+      buildDatasetOptions(ctx, {
+        primary: (spec) =>
+          isPColumnSpec(spec) &&
+          spec.annotations?.["pl7.app/isAnchor"] === "true" &&
+          spec.axesSpec[0]?.name === "pl7.app/sampleId",
+        // Only subsets keyed by the clonotype axis alone: the score is per clonotype.
+        filter: (spec) =>
+          isPColumnSpec(spec) &&
+          spec.axesSpec.length === 1 &&
+          spec.axesSpec[0]?.name !== "pl7.app/sampleId",
+      }) ?? [];
+    return deriveColumnOptions(
       ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
     ).flatMap(({ id, label }) => {
       const ref = parseJsonSafely(id);
       if (!isPlRef(ref)) return [];
-      return [{ ref, label }];
-    }),
-  )
+      const primary = { ref, label };
+      const filters = withFilters.find((o) => plRefsEqual(o.primary.ref, ref, true))?.filters;
+      return [filters === undefined ? { primary } : { primary, filters }];
+    });
+  })
 
   // Reactive feature/tier detection for the selected dataset (no Run needed).
   .output("featureAvailability", (ctx) =>
-    ctx.data.inputAnchor ? detectFeatures(ctx.data.inputAnchor) : undefined,
+    ctx.data.inputAnchor
+      ? detectFeatures(
+          ctx.data.inputAnchor,
+          ctx.data.filterRef && columnIdFromPlRef(ctx.data.filterRef),
+        )
+      : undefined,
   )
 
   // Results table: exactly Clone Id + this block's score + the metrics that fed it.

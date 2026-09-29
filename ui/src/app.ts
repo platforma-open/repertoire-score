@@ -1,4 +1,7 @@
-import { platforma } from "@platforma-open/milaboratories.repertoire-score.model";
+import {
+  columnIdFromPlRef,
+  platforma,
+} from "@platforma-open/milaboratories.repertoire-score.model";
 import type { PlRef } from "@platforma-sdk/model";
 import { plRefsEqual, withEnrichments } from "@platforma-sdk/model";
 import { defineAppV3 } from "@platforma-sdk/ui-vue";
@@ -60,8 +63,10 @@ function syncOptionalSignalRefs(model: AppModel) {
       // clobbering it on a transient. Every write here is persisted and reaches every client.
       if (!anchor || !availability) return;
       // Availability lags the picker by a render; on a switch it can still describe the old
-      // dataset.
+      // dataset, or the old subset filter.
       if (!sameDataset(availability.anchor, anchor)) return;
+      const filter = model.data.filterRef;
+      if (availability.subsetId !== (filter && columnIdFromPlRef(filter))) return;
       const next = availability.optionalSignalRefs;
       const current = model.data.optionalSignalRefs;
       if (current !== undefined && sameRefs(current, next)) return;
