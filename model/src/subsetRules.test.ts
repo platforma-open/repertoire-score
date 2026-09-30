@@ -67,6 +67,18 @@ describe("applySubsetRules", () => {
     expect(kept([pgenG, pgenFull], F)).toEqual([pgenFull.id]);
   });
 
+  test("the legacy pl7.app/subset stamp is read as the same subset", () => {
+    const legacy = (c: SignalCandidate): SignalCandidate => {
+      const { [SUBSET_DOMAIN]: subset, ...domain } = c.spec.domain ?? {};
+      return { ...c, spec: { ...c.spec, domain: { ...domain, "pl7.app/subset": subset! } } };
+    };
+    const pgenFull = col("pgen", "A");
+    const pgenF = legacy(col("pgen", "A", F));
+    const convF = legacy(col("convergence", "A", F));
+    expect(kept([pgenFull, pgenF, convF], F)).toEqual([pgenF.id, convF.id]);
+    expect(kept([pgenFull, pgenF, convF], undefined)).toEqual([pgenFull.id]);
+  });
+
   test("MiXCR signals pass through untouched", () => {
     const mutations = col("mutations", "A");
     expect(kept([mutations], undefined)).toEqual([mutations.id]);

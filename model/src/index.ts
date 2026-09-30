@@ -89,11 +89,19 @@ const OPTIONAL_SIGNALS: ReadonlySet<SignalKind> = new Set<SignalKind>(["pgen", "
 
 // Domain key a block stamps on columns it computed on a subset of its dataset (Generation
 // Probability, Clonotype Convergence). Its value is the subset column's id.
-export const SUBSET_DOMAIN = "pl7.app/subset";
+export const SUBSET_DOMAIN = "pl7.app/inputSubset";
+// The earlier name of SUBSET_DOMAIN, still carried by columns from runs made before the rename.
+const LEGACY_SUBSET_DOMAIN = "pl7.app/subset";
+
+/** The subset a column was computed on, read from its domain under either name
+ *  (undefined = full data). */
+export function inputSubsetOf(domain: Record<string, string> | undefined): string | undefined {
+  return domain?.[SUBSET_DOMAIN] ?? domain?.[LEGACY_SUBSET_DOMAIN];
+}
 
 /**
  * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). It is the
- * form `pl7.app/subset` carries, so this block's own filter can be compared with it.
+ * form `pl7.app/inputSubset` carries, so this block's own filter can be compared with it.
  */
 export const columnIdFromPlRef = (ref: PlRef): string =>
   JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
@@ -114,7 +122,7 @@ export function applySubsetRules(
   candidates: SignalCandidate[],
   subsetId: string | undefined,
 ): SignalCandidate[] {
-  const subsetOf = (c: SignalCandidate) => c.spec.domain?.[SUBSET_DOMAIN];
+  const subsetOf = (c: SignalCandidate) => inputSubsetOf(c.spec.domain);
   const allowed = candidates.filter((c) => {
     if (c.signal === "convergence") return subsetOf(c) === subsetId;
     if (c.signal === "pgen") return subsetOf(c) === undefined || subsetOf(c) === subsetId;
@@ -126,7 +134,7 @@ export function applySubsetRules(
     c.spec.name +
     JSON.stringify(
       Object.entries(c.spec.domain ?? {})
-        .filter(([key]) => key !== SUBSET_DOMAIN)
+        .filter(([key]) => key !== SUBSET_DOMAIN && key !== LEGACY_SUBSET_DOMAIN)
         .sort(([a], [b]) => a.localeCompare(b)),
     );
   // find which chains have a subset Pgen.
@@ -344,7 +352,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       // As stored, `requireEnrichments` and all. Never added here — only carried, until the
       // sync in ui/src/app.ts has the refs to replace it with.
       inputAnchor: data.inputAnchor,
-      // Column-id form, like the `pl7.app/subset` stamps it is compared with. Absent without a
+      // Column-id form, like the `pl7.app/inputSubset` stamps it is compared with. Absent without a
       // filter, so an unfiltered block's args are unchanged.
       ...(data.filterRef !== undefined && { inputFilter: columnIdFromPlRef(data.filterRef) }),
       // Not read by the workflow — it is the dependency edge on the Generation Probability /
