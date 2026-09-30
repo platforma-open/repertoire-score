@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score.model
 
+## 1.4.0
+
+### Minor Changes
+
+- e437f17: Update input subset domain annotation
+
 ## 1.3.0
 
 ### Minor Changes
