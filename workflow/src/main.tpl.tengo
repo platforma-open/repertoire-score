@@ -47,7 +47,9 @@ CHAIN_DOMAIN := "pl7.app/vdj/chain"
 RECEPTOR_DOMAIN := "pl7.app/vdj/receptor"
 // Stamped by Generation Probability / Clonotype Convergence on columns computed on a subset of
 // the dataset. Its value is the subset column's id, the same string as args.inputFilter.
-SUBSET_DOMAIN := "pl7.app/subset"
+SUBSET_DOMAIN := "pl7.app/inputSubset"
+// The earlier name of SUBSET_DOMAIN, still carried by columns from runs made before the rename.
+LEGACY_SUBSET_DOMAIN := "pl7.app/subset"
 
 // The feature->signal map and the canonical feature order come from args
 // (args.featureSignal / args.featureOrder) — single source of truth in the model's
@@ -194,7 +196,10 @@ wf.body(func(args) {
 		if is_undefined(col.spec.domain) {
 			return undefined
 		}
-		return col.spec.domain[SUBSET_DOMAIN]
+		if !is_undefined(col.spec.domain[SUBSET_DOMAIN]) {
+			return col.spec.domain[SUBSET_DOMAIN]
+		}
+		return col.spec.domain[LEGACY_SUBSET_DOMAIN]
 	}
 
 	// --- Classify discovered columns into slots[slot][featureKey] = { col, transform }. ---

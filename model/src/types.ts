@@ -57,7 +57,7 @@ export type BlockData = {
  *  the columns it actually discovers; args carries only the user's intent. */
 export type BlockArgs = {
   inputAnchor: PlRef;
-  /** `filterRef` as its column id: the form upstream blocks stamp as `pl7.app/subset`. */
+  /** `filterRef` as its column id: the form upstream blocks stamp as `pl7.app/inputSubset`. */
   inputFilter?: string;
   /** Absent while never synced. */
   optionalSignalRefs?: PlRef[];
