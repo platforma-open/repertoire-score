@@ -2,7 +2,14 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "@platforma-open/milaboratories.repertoire-score",
+      "@platforma-open/milaboratories.repertoire-score.model",
+      "@platforma-open/milaboratories.repertoire-score.ui",
+      "@platforma-open/milaboratories.repertoire-score.workflow"
+    ]
+  ],
   "linked": [],
   "access": "restricted",
   "baseBranch": "main",
