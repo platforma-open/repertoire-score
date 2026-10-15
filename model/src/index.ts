@@ -39,6 +39,12 @@ export * from "./types";
 // The composite score column emitted by the workflow.
 export const REPERTOIRE_SCORE_COLUMN = "pl7.app/vdj/repertoireScore";
 
+// Key axes of the clonotype datasets this block scores: bulk and single-cell (incl. paired).
+const DATASET_KEY_AXES: ReadonlySet<string> = new Set([
+  "pl7.app/vdj/clonotypeKey",
+  "pl7.app/vdj/scClonotypeKey",
+]);
+
 // The clonotype dataset this block scores — any of the three shapes (bulk /
 // single-cell / paired). All are single-cell/bulk clonotype anchors keyed on
 // (sampleId, clonotypeKey|scClonotypeKey).
@@ -402,34 +408,34 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     customWeights: data.customWeights,
   }))
 
-  // Discovery runs host-side and hands back ids; the block's own wire shape stays
-  // `{ ref, label }`, since args / enriches / the workflow bundle all want a PlRef.
+  // Datasets, each with its subset columns (`pl7.app/isSubset`, e.g. repertoire-labeling labels
+  // or Lead Selection picks) as filters.
   .output("inputOptions", (ctx): DatasetOption[] => {
-    // Subset columns (`pl7.app/isSubset`) on each dataset's axes, e.g. repertoire-labeling
-    // labels or Lead Selection picks. Only the filters are taken from here: its primary refs
-    // carry `requireEnrichments`, which this block deliberately avoids (see
-    // BlockData.optionalSignalRefs). The primary predicate only has to cover the datasets below:
-    // results are matched to them by ref.
-    const withFilters =
+    // Labels as before: buildDatasetOptions derives them with a different labeller.
+    const labeled = deriveColumnOptions(
+      ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
+    ).flatMap(({ id, label }) => {
+      const ref = parseJsonSafely(id);
+      return isPlRef(ref) ? [{ ref, label }] : [];
+    });
+    const options =
       buildDatasetOptions(ctx, {
         primary: (spec) =>
           isPColumnSpec(spec) &&
           spec.annotations?.["pl7.app/isAnchor"] === "true" &&
-          spec.axesSpec[0]?.name === "pl7.app/sampleId",
+          spec.axesSpec.length === 2 &&
+          spec.axesSpec[0].name === "pl7.app/sampleId" &&
+          DATASET_KEY_AXES.has(spec.axesSpec[1].name),
         // Only subsets keyed by the clonotype axis alone: the score is per clonotype.
         filter: (spec) =>
           isPColumnSpec(spec) &&
           spec.axesSpec.length === 1 &&
-          spec.axesSpec[0]?.name !== "pl7.app/sampleId",
+          DATASET_KEY_AXES.has(spec.axesSpec[0].name),
+        requireEnrichments: false,
       }) ?? [];
-    return deriveColumnOptions(
-      ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
-    ).flatMap(({ id, label }) => {
-      const ref = parseJsonSafely(id);
-      if (!isPlRef(ref)) return [];
-      const primary = { ref, label };
-      const filters = withFilters.find((o) => plRefsEqual(o.primary.ref, ref, true))?.filters;
-      return [filters === undefined ? { primary } : { primary, filters }];
+    return options.map((option) => {
+      const label = labeled.find((l) => plRefsEqual(l.ref, option.primary.ref, true))?.label;
+      return label === undefined ? option : { ...option, primary: { ...option.primary, label } };
     });
   })
 
