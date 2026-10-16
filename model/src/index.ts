@@ -13,13 +13,15 @@ import {
   Column,
   DataColumn,
   ColumnsCollection,
-  createPFrameForGraphs,
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
   deriveColumnOptions,
   extractPObjectId,
+  getRelatedColumns,
   isDataColumn,
+  isHiddenFromGraphColumn,
+  isHiddenFromUIColumn,
   isPColumnSpec,
   isPlRef,
   parseJsonSafely,
@@ -475,21 +477,27 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   })
 
   // Distributions: a histogram over the composite score (the default) with re-bind to any
-  // available signal. `createPFrameForGraphs` enriches the block's own frame (score + used
+  // available signal. `getRelatedColumns` enriches the block's own frame (score + used
   // features) with every compatible pool column — so all available per-clonotype signals AND
   // the metadata/linker columns for grouping are present without re-emitting any data. The
   // value picker is narrowed to score + signals UI-side by `isHistogramValueColumn`.
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
     const acc = ctx.outputs?.resolve("tablePf");
     if (!acc) return undefined;
-    // `createPFrameForGraphs` still takes materialised `PColumn[]`, which only bare leaves
+    // `getRelatedColumns` still takes materialised `PColumn[]`, which only bare leaves
     // can produce — these all are, coming straight off the block's own output accessor.
     const leaves = ColumnsCollection([acc]).getColumns().filter(isDataColumn);
     if (leaves.length === 0) return undefined;
-    return createPFrameForGraphs(
-      ctx,
-      leaves.map((c) => ({ id: c.id, spec: c.getSpec(), data: c.getData() })),
-    );
+    const pCols = leaves.map((c) => ({ id: c.id, spec: c.getSpec(), data: c.getData() }));
+    if (pCols.some((c) => c.data === undefined)) return undefined;
+    // Scores of other instances of this block share the name and can share the domain, so only
+    // ours stay in the frame.
+    const ownIds = new Set(pCols.map((c) => c.id));
+    const columns = getRelatedColumns(ctx, {
+      columns: pCols,
+      predicate: (spec) => !isHiddenFromUIColumn(spec) && !isHiddenFromGraphColumn(spec),
+    }).filter((c) => c.spec.name !== REPERTOIRE_SCORE_COLUMN || ownIds.has(c.id));
+    return ctx.createPFrame(columns);
   })
 
   // Column specs the UI picks chart defaults from (label excluded). The full pickable set is
