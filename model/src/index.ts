@@ -111,6 +111,9 @@ export function inputSubsetOf(domain: Record<string, string> | undefined): strin
  * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). It is the
  * form `pl7.app/inputSubset` carries, so this block's own filter can be compared with it.
  */
+const isSubsetScore = (spec: PColumnSpec): boolean =>
+  spec.name === REPERTOIRE_SCORE_COLUMN && inputSubsetOf(spec.domain) !== undefined;
+
 export const columnIdFromPlRef = (ref: PlRef): string =>
   JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
 
@@ -493,10 +496,16 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     // Scores of other instances of this block share the name and can share the domain, so only
     // ours stay in the frame.
     const ownIds = new Set(pCols.map((c) => c.id));
+    // On a subset run the pool's signals cover every clonotype; ours are cut to the subset.
+    const subsetRun = pCols.some((c) => isSubsetScore(c.spec));
     const columns = getRelatedColumns(ctx, {
       columns: pCols,
       predicate: (spec) => !isHiddenFromUIColumn(spec) && !isHiddenFromGraphColumn(spec),
-    }).filter((c) => c.spec.name !== REPERTOIRE_SCORE_COLUMN || ownIds.has(c.id));
+    }).filter(
+      (c) =>
+        ownIds.has(c.id) ||
+        (c.spec.name !== REPERTOIRE_SCORE_COLUMN && !(subsetRun && isPlottableColumn(c.spec))),
+    );
     return ctx.createPFrame(columns);
   })
 
@@ -514,7 +523,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     // Append the CDR mutation fraction column from the input pool if it isn't a scored feature,
     // so it's available as the Distributions default regardless of the resolved preset.
     const anchor = ctx.data.inputAnchor;
-    if (anchor && !specs.some((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
+    const subsetRun = specs.some(isSubsetScore);
+    if (anchor && !subsetRun && !specs.some((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
       const cdr = perClonotypeColumns(anchor)
         ?.filter({ include: { name: exactly(CDR_MUTATION_FRACTION_COLUMN) } })
         .getColumns()[0];
