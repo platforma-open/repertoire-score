@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.repertoire-score.ui
 
+## 1.2.2
+
+### Patch Changes
+
+- b887d65: Release every package through npm trusted publishing (OIDC) so each package's trusted publisher is used before it expires.
+- Updated dependencies [b887d65]
+  - @platforma-open/milaboratories.repertoire-score.model@1.4.1
+
 ## 1.2.1
 
 ### Patch Changes

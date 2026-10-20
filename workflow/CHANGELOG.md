@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score.workflow
 
+## 1.3.1
+
+### Patch Changes
+
+- b887d65: Release every package through npm trusted publishing (OIDC) so each package's trusted publisher is used before it expires.
+
 ## 1.3.0
 
 ### Minor Changes
