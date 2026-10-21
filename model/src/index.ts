@@ -13,13 +13,15 @@ import {
   Column,
   DataColumn,
   ColumnsCollection,
-  createPFrameForGraphs,
   createPlDataTableStateV2,
   createPlDataTableV3,
   DataModelBuilder,
   deriveColumnOptions,
   extractPObjectId,
+  getRelatedColumns,
   isDataColumn,
+  isHiddenFromGraphColumn,
+  isHiddenFromUIColumn,
   isPColumnSpec,
   isPlRef,
   parseJsonSafely,
@@ -38,6 +40,12 @@ export * from "./types";
 
 // The composite score column emitted by the workflow.
 export const REPERTOIRE_SCORE_COLUMN = "pl7.app/vdj/repertoireScore";
+
+// Key axes of the clonotype datasets this block scores: bulk and single-cell (incl. paired).
+const DATASET_KEY_AXES: ReadonlySet<string> = new Set([
+  "pl7.app/vdj/clonotypeKey",
+  "pl7.app/vdj/scClonotypeKey",
+]);
 
 // The clonotype dataset this block scores — any of the three shapes (bulk /
 // single-cell / paired). All are single-cell/bulk clonotype anchors keyed on
@@ -103,6 +111,9 @@ export function inputSubsetOf(domain: Record<string, string> | undefined): strin
  * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). It is the
  * form `pl7.app/inputSubset` carries, so this block's own filter can be compared with it.
  */
+const isSubsetScore = (spec: PColumnSpec): boolean =>
+  spec.name === REPERTOIRE_SCORE_COLUMN && inputSubsetOf(spec.domain) !== undefined;
+
 export const columnIdFromPlRef = (ref: PlRef): string =>
   JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
 
@@ -402,34 +413,34 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     customWeights: data.customWeights,
   }))
 
-  // Discovery runs host-side and hands back ids; the block's own wire shape stays
-  // `{ ref, label }`, since args / enriches / the workflow bundle all want a PlRef.
+  // Datasets, each with its subset columns (`pl7.app/isSubset`, e.g. repertoire-labeling labels
+  // or Lead Selection picks) as filters.
   .output("inputOptions", (ctx): DatasetOption[] => {
-    // Subset columns (`pl7.app/isSubset`) on each dataset's axes, e.g. repertoire-labeling
-    // labels or Lead Selection picks. Only the filters are taken from here: its primary refs
-    // carry `requireEnrichments`, which this block deliberately avoids (see
-    // BlockData.optionalSignalRefs). The primary predicate only has to cover the datasets below:
-    // results are matched to them by ref.
-    const withFilters =
+    // Labels as before: buildDatasetOptions derives them with a different labeller.
+    const labeled = deriveColumnOptions(
+      ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
+    ).flatMap(({ id, label }) => {
+      const ref = parseJsonSafely(id);
+      return isPlRef(ref) ? [{ ref, label }] : [];
+    });
+    const options =
       buildDatasetOptions(ctx, {
         primary: (spec) =>
           isPColumnSpec(spec) &&
           spec.annotations?.["pl7.app/isAnchor"] === "true" &&
-          spec.axesSpec[0]?.name === "pl7.app/sampleId",
+          spec.axesSpec.length === 2 &&
+          spec.axesSpec[0].name === "pl7.app/sampleId" &&
+          DATASET_KEY_AXES.has(spec.axesSpec[1].name),
         // Only subsets keyed by the clonotype axis alone: the score is per clonotype.
         filter: (spec) =>
           isPColumnSpec(spec) &&
           spec.axesSpec.length === 1 &&
-          spec.axesSpec[0]?.name !== "pl7.app/sampleId",
+          DATASET_KEY_AXES.has(spec.axesSpec[0].name),
+        requireEnrichments: false,
       }) ?? [];
-    return deriveColumnOptions(
-      ColumnsCollection(["result_pool"]).filter({ include: inputAnchorSelectors }),
-    ).flatMap(({ id, label }) => {
-      const ref = parseJsonSafely(id);
-      if (!isPlRef(ref)) return [];
-      const primary = { ref, label };
-      const filters = withFilters.find((o) => plRefsEqual(o.primary.ref, ref, true))?.filters;
-      return [filters === undefined ? { primary } : { primary, filters }];
+    return options.map((option) => {
+      const label = labeled.find((l) => plRefsEqual(l.ref, option.primary.ref, true))?.label;
+      return label === undefined ? option : { ...option, primary: { ...option.primary, label } };
     });
   })
 
@@ -469,21 +480,33 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   })
 
   // Distributions: a histogram over the composite score (the default) with re-bind to any
-  // available signal. `createPFrameForGraphs` enriches the block's own frame (score + used
+  // available signal. `getRelatedColumns` enriches the block's own frame (score + used
   // features) with every compatible pool column — so all available per-clonotype signals AND
   // the metadata/linker columns for grouping are present without re-emitting any data. The
   // value picker is narrowed to score + signals UI-side by `isHistogramValueColumn`.
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
     const acc = ctx.outputs?.resolve("tablePf");
     if (!acc) return undefined;
-    // `createPFrameForGraphs` still takes materialised `PColumn[]`, which only bare leaves
+    // `getRelatedColumns` still takes materialised `PColumn[]`, which only bare leaves
     // can produce — these all are, coming straight off the block's own output accessor.
     const leaves = ColumnsCollection([acc]).getColumns().filter(isDataColumn);
     if (leaves.length === 0) return undefined;
-    return createPFrameForGraphs(
-      ctx,
-      leaves.map((c) => ({ id: c.id, spec: c.getSpec(), data: c.getData() })),
+    const pCols = leaves.map((c) => ({ id: c.id, spec: c.getSpec(), data: c.getData() }));
+    if (pCols.some((c) => c.data === undefined)) return undefined;
+    // Scores of other instances of this block share the name and can share the domain, so only
+    // ours stay in the frame.
+    const ownIds = new Set(pCols.map((c) => c.id));
+    // On a subset run the pool's signals cover every clonotype; ours are cut to the subset.
+    const subsetRun = pCols.some((c) => isSubsetScore(c.spec));
+    const columns = getRelatedColumns(ctx, {
+      columns: pCols,
+      predicate: (spec) => !isHiddenFromUIColumn(spec) && !isHiddenFromGraphColumn(spec),
+    }).filter(
+      (c) =>
+        ownIds.has(c.id) ||
+        (c.spec.name !== REPERTOIRE_SCORE_COLUMN && !(subsetRun && isPlottableColumn(c.spec))),
     );
+    return ctx.createPFrame(columns);
   })
 
   // Column specs the UI picks chart defaults from (label excluded). The full pickable set is
@@ -500,7 +523,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     // Append the CDR mutation fraction column from the input pool if it isn't a scored feature,
     // so it's available as the Distributions default regardless of the resolved preset.
     const anchor = ctx.data.inputAnchor;
-    if (anchor && !specs.some((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
+    const subsetRun = specs.some(isSubsetScore);
+    if (anchor && !subsetRun && !specs.some((spec) => spec.name === CDR_MUTATION_FRACTION_COLUMN)) {
       const cdr = perClonotypeColumns(anchor)
         ?.filter({ include: { name: exactly(CDR_MUTATION_FRACTION_COLUMN) } })
         .getColumns()[0];

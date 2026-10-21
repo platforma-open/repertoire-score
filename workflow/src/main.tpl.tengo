@@ -446,6 +446,9 @@ wf.body(func(args) {
 		// computeScore) so absent clonotypes render "Not hit", matching how the score treated
 		// them; every other feature shows its raw values (honest blanks for genuine missings).
 		colData := c.data
+		if !is_undefined(scoreResult.subsetFeatures[c.header]) {
+			colData = scoreResult.subsetFeatures[c.header].data
+		}
 		if c.spec.name == CONV_FASTSTAR && !is_undefined(scoreResult.hitDisplays[c.header]) {
 			colData = scoreResult.hitDisplays[c.header].data
 		}
