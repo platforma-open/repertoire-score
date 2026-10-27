@@ -1,5 +1,12 @@
 # @platforma-open/milaboratories.repertoire-score.ui
 
+## 1.4.2
+
+### Patch Changes
+
+- Updated dependencies [29c6c31]
+  - @platforma-open/milaboratories.repertoire-score.model@1.4.2
+
 ## 1.2.2
 
 ### Patch Changes

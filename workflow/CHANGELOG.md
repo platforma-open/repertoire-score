@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score.workflow
 
+## 1.4.2
+
+### Patch Changes
+
+- 29c6c31: Update the SDK and build the dataset list with buildDatasetOptions (requireEnrichments: false), replacing the custom merge of datasets and their subset filters. On a subset run, the Distributions and Comparison plots show only the subset's clonotypes.
+
 ## 1.3.1
 
 ### Patch Changes
