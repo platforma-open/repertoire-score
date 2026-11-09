@@ -7,6 +7,7 @@ import type {
 import {
   defaultFeatureWeights,
   FEATURE_ORDER,
+  TIER_LABELS,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
 import {
@@ -25,7 +26,7 @@ import {
   PlSectionSeparator,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
-import { computed, ref, watchEffect } from "vue";
+import { computed, ref } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -47,15 +48,6 @@ const weightModeOptions = [
   { value: "default" as const, label: "Default" },
   { value: "custom" as const, label: "Custom" },
 ];
-
-// User-facing labels — by signals, not tier ids. "Base" = the mutations + abundance
-// MiXCR floor that every tier includes; higher tiers add signals on top.
-const TIER_LABELS: Record<SelectableTier, string> = {
-  "1": "Base: mutations + abundance",
-  "2a": "Base + Convergence",
-  "2b": "Base + Generation probability",
-  "3": "Base + Convergence + Generation probability",
-};
 
 // Per-feature labels + zero-prior-knowledge explanations (weight editor rows).
 const FEATURE_LABELS: Record<FeatureKey, string> = {
@@ -149,6 +141,9 @@ const datasetSelection = computed<DatasetSelection | undefined>({
   set: (selection) => {
     app.model.data.inputAnchor = selection?.primary.column;
     app.model.data.filterRef = selection?.primary.filter;
+    app.model.data.subtitleLabel = selection
+      ? labelFor(selection.primary.column, selection.primary.filter)
+      : "";
   },
 });
 
@@ -164,15 +159,6 @@ const labelFor = (ref: PlRef, filter: PlRef | undefined): string => {
   }
   return option?.primary.label ?? "";
 };
-
-// Keep the auto block-label default in sync: "<dataset> · <scoring formula variables>".
-watchEffect(() => {
-  const ref = app.model.data.inputAnchor;
-  const dataset = ref ? labelFor(ref, app.model.data.filterRef) : "";
-  const tier = resolvedTier.value;
-  app.model.data.defaultBlockLabel =
-    dataset && tier ? `${dataset} · ${TIER_LABELS[tier]}` : dataset;
-});
 
 // Preset default coefficients for the resolved (family, tier).
 const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
