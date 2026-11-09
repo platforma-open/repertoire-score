@@ -14,8 +14,9 @@ export { FEATURE_KEYS, PRESET_FAMILIES, SELECTABLE_TIERS, WEIGHT_MODES } from ".
  * (preset family, tier choice, weight mode and any per-feature weights they
  * edited).
  *
- * Left out: `defaultBlockLabel`, which a `watchEffect` derives from the dataset
- * and the resolved tier, and the table / histogram / scatter view state.
+ * Left out: `subtitleLabel`, the dataset's label kept in sync by the UI,
+ * which does not exist before the result pool has resolved the chosen dataset,
+ * and the table / histogram / scatter view state.
  *
  * Every field is optional because the projection hands live state back
  * untouched, and a block whose dataset is not picked yet holds `undefined`

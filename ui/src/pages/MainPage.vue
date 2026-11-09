@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { defaultSubtitle } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   PlAgDataTableV2,
   PlAlert,
@@ -61,7 +62,7 @@ const customBlockLabel = computed({
 <template>
   <PlBlockPage
     v-model:subtitle="customBlockLabel"
-    :subtitle-placeholder="app.model.data.defaultBlockLabel ?? ''"
+    :subtitle-placeholder="defaultSubtitle(app.model.data)"
     title="Repertoire Score"
   >
     <template #append>

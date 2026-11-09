@@ -31,8 +31,11 @@ export type BlockData = {
   optionalSignalRefs?: PlRef[];
   // User-editable block label.
   customBlockLabel?: string;
-  // Auto-generated default label.
-  defaultBlockLabel?: string;
+  /**
+   * The dataset's (or subset's) label as the result pool shows it, kept in sync by the UI;
+   * feeds the subtitle only, never the workflow.
+   */
+  subtitleLabel?: string;
   presetFamily: PresetFamily;
   // Scoring-signals control:
   //   "default" — highest reachable tier; auto-upgrades as upstream signals appear.
@@ -51,6 +54,11 @@ export type BlockData = {
   graphStateHistogram: GraphMakerState;
   // View state for the Comparison scatterplot (any signal vs any signal). UI-only.
   graphStateScatter: GraphMakerState;
+};
+
+/** Data as stored before `subtitleLabel` replaced the UI-computed `defaultBlockLabel`. */
+export type BlockDataV1 = Omit<BlockData, "subtitleLabel"> & {
+  defaultBlockLabel?: string;
 };
 
 /** Workflow args projected from `data`. The workflow resolves the effective tier from

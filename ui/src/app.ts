@@ -5,7 +5,7 @@ import {
 import type { PlRef } from "@platforma-sdk/model";
 import { plRefsEqual, withEnrichments } from "@platforma-sdk/model";
 import { defineAppV3 } from "@platforma-sdk/ui-vue";
-import { watch } from "vue";
+import { computed, watch } from "vue";
 import ComparisonPage from "./pages/ComparisonPage.vue";
 import DistributionsPage from "./pages/DistributionsPage.vue";
 import MainPage from "./pages/MainPage.vue";
@@ -13,6 +13,7 @@ import MainPage from "./pages/MainPage.vue";
 export const sdkPlugin = defineAppV3(platforma, (app) => {
   // Keep the optional-signal dependencies (Generation Probability, Convergence) live.
   syncOptionalSignalRefs(app.model);
+  syncSubtitleLabel(app.model);
   return {
     routes: {
       "/": () => MainPage,
@@ -25,6 +26,34 @@ export const sdkPlugin = defineAppV3(platforma, (app) => {
 export const useApp = sdkPlugin.useApp;
 
 type AppModel = ReturnType<typeof useApp>["model"];
+
+function syncSubtitleLabel(model: AppModel) {
+  // The picked entry's label: the subset's when one is picked (its label already carries the
+  // dataset as a prefix), else the dataset's. "" when no dataset is picked; undefined while the
+  // picked dataset is not among the options yet.
+  const subtitleLabel = computed<string | undefined>(() => {
+    const { inputAnchor, filterRef } = model.data;
+    if (inputAnchor === undefined) return "";
+    const option = model.outputs.inputOptions?.find((o) =>
+      plRefsEqual(o.primary.ref, inputAnchor, true),
+    );
+    if (option === undefined) return undefined;
+    if (filterRef !== undefined) {
+      const filterLabel = option.filters?.find((f) => plRefsEqual(f.ref, filterRef, true))?.label;
+      if (filterLabel !== undefined) return filterLabel;
+    }
+    return option.primary.label;
+  });
+
+  watch(
+    subtitleLabel,
+    (label) => {
+      if (label !== undefined && label !== model.data.subtitleLabel)
+        model.data.subtitleLabel = label;
+    },
+    { immediate: true },
+  );
+}
 
 // Ignores `requireEnrichments`: it says how the block depends on a dataset, not which one.
 // Counting it would make the flag-stripping write below look like a dataset switch, and the
