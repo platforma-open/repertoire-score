@@ -9,7 +9,7 @@ import {
   FEATURE_ORDER,
   TIER_LABELS,
 } from "@platforma-open/milaboratories.repertoire-score.model";
-import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
+import type { DatasetSelection } from "@platforma-sdk/model";
 import {
   createDatasetSelection,
   createPrimaryRef,
@@ -26,7 +26,7 @@ import {
   PlSectionSeparator,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -141,24 +141,34 @@ const datasetSelection = computed<DatasetSelection | undefined>({
   set: (selection) => {
     app.model.data.inputAnchor = selection?.primary.column;
     app.model.data.filterRef = selection?.primary.filter;
-    app.model.data.subtitleLabel = selection
-      ? labelFor(selection.primary.column, selection.primary.filter)
-      : "";
   },
 });
 
 // The picked entry's label: the subset's when one is picked (its label already carries the
-// dataset as a prefix), else the dataset's.
-const labelFor = (ref: PlRef, filter: PlRef | undefined): string => {
-  const option = (app.model.outputs.inputOptions ?? []).find((o) =>
-    plRefsEqual(o.primary.ref, ref, true),
+// dataset as a prefix), else the dataset's. "" when no dataset is picked; undefined while the
+// picked dataset is not among the options yet.
+const subtitleLabel = computed<string | undefined>(() => {
+  const { inputAnchor, filterRef } = app.model.data;
+  if (inputAnchor === undefined) return "";
+  const option = app.model.outputs.inputOptions?.find((o) =>
+    plRefsEqual(o.primary.ref, inputAnchor, true),
   );
-  if (filter !== undefined) {
-    const filterLabel = option?.filters?.find((f) => plRefsEqual(f.ref, filter, true))?.label;
+  if (option === undefined) return undefined;
+  if (filterRef !== undefined) {
+    const filterLabel = option.filters?.find((f) => plRefsEqual(f.ref, filterRef, true))?.label;
     if (filterLabel !== undefined) return filterLabel;
   }
-  return option?.primary.label ?? "";
-};
+  return option.primary.label;
+});
+
+watch(
+  subtitleLabel,
+  (label) => {
+    if (label !== undefined && label !== app.model.data.subtitleLabel)
+      app.model.data.subtitleLabel = label;
+  },
+  { immediate: true },
+);
 
 // Preset default coefficients for the resolved (family, tier).
 const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
