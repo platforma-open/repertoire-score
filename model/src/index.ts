@@ -339,15 +339,15 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
 const dataModel = new DataModelBuilder({ kind })
   .from<BlockDataV1>("v1")
   // The old label mixed the dataset's result-pool label with the resolved tier; the pinned tier
-  // is recomputed from data, and the dataset part returns on the next dataset pick.
+  // is recomputed from data, and the dataset part returns when the block is opened.
   .migrate<BlockData>("v2", ({ defaultBlockLabel: _, ...rest }) => ({
     ...rest,
     subtitleLabel: "",
   }))
   .init(({ params }) => ({
     customBlockLabel: params?.customBlockLabel ?? "",
-    // The dataset's label comes from the result pool, which `init` cannot reach; it is written
-    // when the user picks a dataset.
+    // The dataset's label comes from the result pool, which `init` cannot reach; the UI keeps
+    // it in sync.
     subtitleLabel: "",
     // Taken as given: an older template's anchor carries `requireEnrichments`, and stripping
     // it without refs to replace it would drop the dependency.

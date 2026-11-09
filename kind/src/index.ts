@@ -14,7 +14,7 @@ export { FEATURE_KEYS, PRESET_FAMILIES, SELECTABLE_TIERS, WEIGHT_MODES } from ".
  * (preset family, tier choice, weight mode and any per-feature weights they
  * edited).
  *
- * Left out: `subtitleLabel`, the dataset's label written by the dataset picker,
+ * Left out: `subtitleLabel`, the dataset's label kept in sync by the UI,
  * which does not exist before the result pool has resolved the chosen dataset,
  * and the table / histogram / scatter view state.
  *
