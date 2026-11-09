@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 1.4.3
+
+### Patch Changes
+
+- afaad24: The dataset list no longer shows an error when the project has a MiXCR library.
+
 ## 1.4.2
 
 ### Patch Changes

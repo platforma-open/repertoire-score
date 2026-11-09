@@ -1,5 +1,19 @@
 # @platforma-open/milaboratories.repertoire-score.ui
 
+## 1.4.3
+
+### Patch Changes
+
+- 4e56a17: Compute the block subtitle's settings part in the model
+
+  The subtitle shows the dataset's (or subset's) label, kept in sync with the result pool and
+  written only when it changes, followed by the tier when one is pinned in custom mode. Existing
+  blocks show the pinned tier alone (or nothing) until the block is opened. The block's arguments
+  do not change, so existing blocks do not become stale.
+
+- Updated dependencies [4e56a17]
+  - @platforma-open/milaboratories.repertoire-score.model@1.4.3
+
 ## 1.4.2
 
 ### Patch Changes
