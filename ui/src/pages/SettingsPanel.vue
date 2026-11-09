@@ -26,7 +26,7 @@ import {
   PlSectionSeparator,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -143,32 +143,6 @@ const datasetSelection = computed<DatasetSelection | undefined>({
     app.model.data.filterRef = selection?.primary.filter;
   },
 });
-
-// The picked entry's label: the subset's when one is picked (its label already carries the
-// dataset as a prefix), else the dataset's. "" when no dataset is picked; undefined while the
-// picked dataset is not among the options yet.
-const subtitleLabel = computed<string | undefined>(() => {
-  const { inputAnchor, filterRef } = app.model.data;
-  if (inputAnchor === undefined) return "";
-  const option = app.model.outputs.inputOptions?.find((o) =>
-    plRefsEqual(o.primary.ref, inputAnchor, true),
-  );
-  if (option === undefined) return undefined;
-  if (filterRef !== undefined) {
-    const filterLabel = option.filters?.find((f) => plRefsEqual(f.ref, filterRef, true))?.label;
-    if (filterLabel !== undefined) return filterLabel;
-  }
-  return option.primary.label;
-});
-
-watch(
-  subtitleLabel,
-  (label) => {
-    if (label !== undefined && label !== app.model.data.subtitleLabel)
-      app.model.data.subtitleLabel = label;
-  },
-  { immediate: true },
-);
 
 // Preset default coefficients for the resolved (family, tier).
 const weightDefaults = computed<Partial<Record<FeatureKey, number>>>(() =>
