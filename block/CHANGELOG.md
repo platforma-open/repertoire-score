@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 1.4.4
+
+### Patch Changes
+
+- a43badf: Point the block's repository link to the current GitHub repository.
+
 ## 1.4.3
 
 ### Patch Changes

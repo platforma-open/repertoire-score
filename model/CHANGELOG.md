@@ -1,5 +1,7 @@
 # @platforma-open/milaboratories.repertoire-score.model
 
+## 1.4.4
+
 ## 1.4.3
 
 ### Patch Changes
