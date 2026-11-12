@@ -44,7 +44,7 @@
     "meta": {
       "title": "Repertoire Score",
       "logo": "file:../logos/block-logo.png",
-      "url": "https://github.com/platforma-open/milaboratories.repertoire-score",
+      "url": "https://github.com/platforma-open/repertoire-score",
       "support": "mailto:support@milaboratories.com",
       "description": "A transparent, tunable per-clonotype score for antibody lead selection — it fuses maturation, abundance, convergence, and generation-probability signals.",
       "longDescription": "file:../docs/description.md",
