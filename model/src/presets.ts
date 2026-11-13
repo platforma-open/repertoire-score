@@ -3,10 +3,12 @@ import type {
   PresetFamily,
   SelectableTier,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
-import type { SignalKind } from "./types";
+import type { RunTier, SignalKind } from "./types";
 
-/** Display/editor order — grouped by signal (mutations ×4, abundance, pgen, convergence). */
+/** Display/editor order — grouped by signal (mutations ×6, abundance, pgen, convergence). */
 export const FEATURE_ORDER: FeatureKey[] = [
+  "heavyNtMutationsVJ",
+  "ntMutationsDistance",
   "cdrMutationFraction",
   "aaMutationsCDR",
   "aaMutationsFWR",
@@ -14,6 +16,7 @@ export const FEATURE_ORDER: FeatureKey[] = [
   "logCells",
   "negLogPgen",
   "negLogLightPgen",
+  "nbFreq",
   "fastStar",
 ];
 
@@ -23,98 +26,115 @@ export const FEATURE_SIGNAL: Record<FeatureKey, SignalKind> = {
   aaMutationsCDR: "mutations",
   aaMutationsFWR: "mutations",
   ntMutations: "mutations",
+  ntMutationsDistance: "mutations",
+  heavyNtMutationsVJ: "mutations",
   logCells: "abundance",
   negLogPgen: "pgen",
   negLogLightPgen: "pgen",
+  nbFreq: "convergence",
   fastStar: "convergence",
 };
 
+/** Centre k of `ntMutationsDistance` = |nt mutations − k|. */
+export const NT_MUTATIONS_CENTER = 6;
+
 /**
- * v1 preset coefficients, keyed by (family, tier).
- * Each feature carries its own coefficient — there is NO light-chain scaling. Mutations and
- * abundance are chain-aggregated (one column, heavy+light merged); light-chain generation
- * probability is an explicit feature (`negLogLightPgen`) in Tier 2b/3; convergence (`fastStar`)
- * is heavy-only.
+ * Preset coefficients, keyed by (family, tier): one row per tier the family offers; `canonicalTier`
+ * maps the others. Each feature carries its own signed coefficient.
  *
- * - Standard family: hand-set, non-negative, sum-to-1 (biology-informed direction).
- * - Antigen-selected family: fitted logistic regression on percentile-ranked features — signed.
- *
- * Fitted on a single Chirichella dataset. The feature *set* differs
- * per (family, tier): e.g. standard-mutations reproduces the legacy in-vivo formula.
+ * - standard: −1 · |nt mutations − 6| − 0.25 · CDR amino-acid mutations; tier 2a adds the
+ *   convergent neighbour frequency.
+ * - antigen-selected: heavy-chain V + J nucleotide mutations + 0.25 · CDR amino-acid mutations;
+ *   tier 2b adds the heavy and light generation probability (−log10) at 0.5 each.
  */
 export const PRESET_COEFFICIENTS: Record<
   PresetFamily,
-  Record<SelectableTier, Partial<Record<FeatureKey, number>>>
+  Partial<Record<RunTier, Partial<Record<FeatureKey, number>>>>
 > = {
   standard: {
-    "1": { logCells: 0.4, cdrMutationFraction: 0.35, ntMutations: 0.25 },
-    "2a": {
-      logCells: 0.1,
-      ntMutations: 0.15,
-      aaMutationsCDR: 0.15,
-      aaMutationsFWR: 0.1,
-      fastStar: 0.5,
-    },
-    "2b": {
-      logCells: 0.1,
-      ntMutations: 0.15,
-      aaMutationsCDR: 0.15,
-      aaMutationsFWR: 0.1,
-      negLogPgen: 0.4,
-      negLogLightPgen: 0.1,
-    },
-    "3": {
-      logCells: 0.05,
-      ntMutations: 0.1,
-      aaMutationsCDR: 0.1,
-      aaMutationsFWR: 0.1,
-      fastStar: 0.35,
-      negLogPgen: 0.25,
-      negLogLightPgen: 0.05,
-    },
+    "1": { ntMutationsDistance: -1, aaMutationsCDR: -0.25 },
+    "2a": { ntMutationsDistance: -1, aaMutationsCDR: -0.25, nbFreq: 1 },
   },
   "antigen-selected": {
-    "1": {
-      cdrMutationFraction: 0.3213,
-      aaMutationsCDR: 0.4067,
-      aaMutationsFWR: 1.7045,
-      ntMutations: -1.1914,
-      logCells: -1.0515,
-    },
-    "2a": {
-      cdrMutationFraction: 0.2641,
-      aaMutationsCDR: 0.687,
-      aaMutationsFWR: 1.705,
-      ntMutations: -1.2492,
-      logCells: -1.0424,
-      fastStar: -0.8755,
-    },
-    "2b": {
-      cdrMutationFraction: 0.414,
-      aaMutationsCDR: -0.365,
-      aaMutationsFWR: 1.807,
-      ntMutations: -0.986,
-      logCells: -1.139,
-      negLogPgen: 1.714,
-      negLogLightPgen: 1.004,
-    },
-    "3": {
-      cdrMutationFraction: 0.331,
-      aaMutationsCDR: 0.1,
-      aaMutationsFWR: 1.776,
-      ntMutations: -1.077,
-      logCells: -1.006,
-      negLogPgen: 2.764,
-      negLogLightPgen: 0.92,
-      fastStar: -2.5,
-    },
+    "1": { heavyNtMutationsVJ: 1, aaMutationsCDR: 0.25 },
+    "2b": { heavyNtMutationsVJ: 1, aaMutationsCDR: 0.25, negLogPgen: 0.5, negLogLightPgen: 0.5 },
   },
 };
 
 /** Default per-feature coefficients for the resolved (family, tier) preset. */
 export function defaultFeatureWeights(
   family: PresetFamily,
-  tier: SelectableTier,
+  tier: RunTier,
 ): Partial<Record<FeatureKey, number>> {
   return PRESET_COEFFICIENTS[family][tier] ?? {};
+}
+
+/** The signals a family's presets score at any tier. */
+export function familySignals(family: PresetFamily): Set<SignalKind> {
+  const used = new Set<SignalKind>();
+  for (const row of Object.values(PRESET_COEFFICIENTS[family])) {
+    for (const f of Object.keys(row) as FeatureKey[]) used.add(FEATURE_SIGNAL[f]);
+  }
+  return used;
+}
+
+/** Tier order. Mirrors the workflow's TIER_ORDER. */
+const RUN_TIERS: readonly RunTier[] = ["1", "2a", "2b"];
+
+/** The tiers a family offers: one per row, in tier order. */
+export function familyTiers(family: PresetFamily): RunTier[] {
+  return RUN_TIERS.filter((t) => PRESET_COEFFICIENTS[family][t] !== undefined);
+}
+
+/**
+ * The family's tiers whose optional signals are all in `present`, in tier order. The MiXCR
+ * mutation floor is the caller's to check.
+ */
+export function reachableTiersFor(
+  family: PresetFamily,
+  present: ReadonlySet<SignalKind>,
+): RunTier[] {
+  return familyTiers(family).filter((t) =>
+    (Object.keys(PRESET_COEFFICIENTS[family][t] ?? {}) as FeatureKey[]).every((f) => {
+      const signal = FEATURE_SIGNAL[f];
+      return signal === "mutations" || present.has(signal);
+    }),
+  );
+}
+
+/** The tier the family runs with these signals present: its last reachable tier. */
+export function tierFor(family: PresetFamily, present: ReadonlySet<SignalKind>): RunTier {
+  const reachable = reachableTiersFor(family, present);
+  return reachable[reachable.length - 1] ?? "1";
+}
+
+/** The optional signals a saved tier asks for. "3" only comes from a block saved with 1.4.x. */
+const SAVED_TIER_SIGNALS: Record<SelectableTier, SignalKind[]> = {
+  "1": [],
+  "2a": ["convergence"],
+  "2b": ["pgen"],
+  "3": ["pgen", "convergence"],
+};
+
+/**
+ * The tier a family runs for a saved `tier`
+ */
+export function canonicalTier(family: PresetFamily, tier: SelectableTier): RunTier {
+  return tierFor(family, new Set(SAVED_TIER_SIGNALS[tier]));
+}
+
+/**
+ * Saved custom weights the family's presets do not score, in display order. The workflow ignores
+ * them (e.g. `logCells` / `fastStar` saved with an earlier version's presets).
+ */
+export function inertCustomWeights(
+  family: PresetFamily,
+  weights: Partial<Record<FeatureKey, number>> | undefined,
+): FeatureKey[] {
+  if (!weights) return [];
+  const scored = new Set<FeatureKey>();
+  for (const row of Object.values(PRESET_COEFFICIENTS[family])) {
+    for (const f of Object.keys(row) as FeatureKey[]) scored.add(f);
+  }
+  return FEATURE_ORDER.filter((f) => weights[f] !== undefined && !scored.has(f));
 }

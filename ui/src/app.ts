@@ -96,6 +96,8 @@ function syncOptionalSignalRefs(model: AppModel) {
       if (!sameDataset(availability.anchor, anchor)) return;
       const filter = model.data.filterRef;
       if (availability.subsetId !== (filter && columnIdFromPlRef(filter))) return;
+      // Or the previous preset family, whose signals differ.
+      if (availability.family !== model.data.presetFamily) return;
       const next = availability.optionalSignalRefs;
       const current = model.data.optionalSignalRefs;
       if (current !== undefined && sameRefs(current, next)) return;

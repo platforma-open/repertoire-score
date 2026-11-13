@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { defaultSubtitle } from "@platforma-open/milaboratories.repertoire-score.model";
+import {
+  defaultSubtitle,
+  scoreBlocker,
+} from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   PlAgDataTableV2,
   PlAlert,
@@ -34,13 +37,15 @@ const settingsOpen = computed({
   },
 });
 
-// Blocking error only: the dataset carries no MiXCR mutation/abundance features, so the block
-// cannot score. Absent otherwise — the "which signals" read-out lives in Settings, not here.
+// Blocking error only: the dataset carries no MiXCR mutation features, or the run would stop for
+// this preset family (the same text as the Settings notice). Absent otherwise — the "which
+// signals" read-out lives in Settings, not here.
 const scoreError = computed(() => {
   const a = app.model.outputs.featureAvailability;
-  return a && a.tier === "none"
-    ? "Cannot score: MiXCR clonotyping features (mutations / abundance) not found for this dataset."
-    : undefined;
+  if (!a) return undefined;
+  return a.tier === "none"
+    ? "Cannot score: MiXCR clonotyping mutation features for this dataset not found."
+    : scoreBlocker(a, app.model.data.presetFamily);
 });
 
 // Results table: Clone Id + score + the metrics that fed it (from the workflow's tablePf).

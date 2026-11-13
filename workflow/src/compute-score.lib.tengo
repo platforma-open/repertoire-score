@@ -1,7 +1,7 @@
 // Composite repertoire score — the pure-pt (Polars) computation.
 //
 // One score per clonotype, computed over a single global window (the whole input).
-// The recipe: null-fill each feature (median for continuous features, 0 for hit flags),
+// The recipe: null-fill each feature (median, or 0 for the convergence features),
 // average-rank it, take the coefficient-weighted sum of the ranks, then re-rank that
 // composite and normalise to (0, 1].
 // The final re-rank is what pins the output to [0, 1] regardless of the (signed)
@@ -25,24 +25,26 @@ GRP := "__grp"
 * Computes the composite score for a set of per-clonotype feature columns.
 *
 * @param inputCols - array of feature descriptors, each:
-*   { header: string, spec: object, data: object, transform: string, coef: number }
+*   { header, spec, data, transform, nullFill, center, addend, coef }
 *   - header    : unique in-frame column name for this feature contribution.
 *   - spec/data : the source PColumn (keyed on the clonotype-key axis).
-*   - transform : "identity" | "log1p" | "hitFlag" — the raw->analysis mapping.
+*   - transform : "identity" | "distance" | "sumVJ" — the raw->analysis
+*                 mapping. "distance" = |x − center|; "sumVJ" = x + addend.
+*   - nullFill  : "zero" fills a missing value with 0; otherwise the median.
+*   - center    : the centre of "distance".
+*   - addend    : optional { spec, data } column added to the source (a missing addend counts
+*                 as 0; a missing source stays missing).
 *   - coef      : signed coefficient applied to this feature's percentile rank
 *                 (per-feature; no light-chain scaling — light Pgen is its own feature).
 * @param keyAxisSpec - the clonotype-key axis spec (bulk clonotypeKey / SC scClonotypeKey).
 * @param scoreSpec   - the output score PColumn spec, sans axesSpec.
-* @param convColName - the convergence hit column name (matched on spec.name). Its null
-*                      clonotypes are treated as "Not hit": filled 0 for the score, shown
-*                      "Not hit" in the table — never median-imputed.
 * @param filterArg   - optional `pl7.app/isSubset` column ({ spec, data }) on the key axis:
 *                      only its clonotypes are scored, so the ranks are taken within them.
-* @return { score: <score PColumn>, hitDisplays: map of convergence in-frame header ->
-*          its "Hit"/"Not hit" display PColumn (nulls backfilled to "Not hit"),
-*          subsetFeatures: with a filter, in-frame header -> the raw feature cut to the subset }.
+* @return { score: <score PColumn>,
+*          subsetFeatures: with a filter, in-frame header -> the raw feature cut to the subset;
+*          an addend's under header + "__add" }.
 */
-computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterArg) {
+computeScore := func(inputCols, keyAxisSpec, scoreSpec, ...filterArg) {
 	ll.assert(len(inputCols) > 0, "computeScore: no feature columns to score")
 
 	ptWf := pt.workflow().cpu(1).mem("4GiB")
@@ -53,6 +55,9 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 	entries := []
 	for c in inputCols {
 		entries = append(entries, pt.p.column(c.header, { spec: c.spec, data: c.data }))
+		if !is_undefined(c.addend) {
+			entries = append(entries, pt.p.column(c.header + "__add", c.addend))
+		}
 	}
 
 	// Project the clonotype key as a named column, plus each feature with its
@@ -60,18 +65,19 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 	selectExprs := [pt.sc.axis(keyAxisSpec).alias("clonotypeKey")]
 	for c in inputCols {
 		e := pt.col(c.header)
-		if c.transform == "log1p" {
-			// Abundance (e.g. unique cell count) is compressed by log1p.
-			e = pt.col(c.header).plus(pt.lit(1)).log()
-		} else if c.transform == "hitFlag" {
-			// Convergence "Hit"/"Not hit" flag -> 1.0 / 0.0. `.eq` yields null on null input
-			// and the cast preserves it; that null is filled with 0 (NOT the median) below,
-			// since an absent convergence result means "no hit", not "average convergence".
-			e = pt.col(c.header).eq("Hit").cast("Double")
+		if c.transform == "distance" {
+			// |x − center|. A null stays null and gets the median distance below.
+			e = pt.col(c.header).minus(pt.lit(c.center)).abs()
+		}
+		if !is_undefined(c.addend) {
+			e = e.plus(pt.col(c.header + "__add").fillNull(pt.lit(0)))
 		}
 		selectExprs = append(selectExprs, e.alias(c.header))
 		if !is_undefined(filterColumn) {
 			selectExprs = append(selectExprs, pt.col(c.header).alias(c.header + "__raw"))
+			if !is_undefined(c.addend) {
+				selectExprs = append(selectExprs, pt.col(c.header + "__add").alias(c.header + "__add__raw"))
+			}
 		}
 	}
 	// Optional subset filter (a `pl7.app/isSubset` column on the key axis): an inner join
@@ -85,14 +91,13 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 	// Single global group for every subsequent window op.
 	df = df.withColumns(pt.lit(1).alias(GRP))
 
-	// Null-fill each feature within the global window. Continuous features get the median
-	// (a neutral, mid-rank stand-in for a missing measurement). A hit-flag feature instead
-	// gets 0: a null there means the clonotype was filtered upstream before convergence could
-	// be called.
+	// Null-fill each feature within the global window. Most features get the median of their
+	// (transformed) values. The convergence features (nullFill "zero") get 0: a null there means
+	// the clonotype was left out of the convergence analysis, so it gets no convergence credit.
 	imputeExprs := []
 	for c in inputCols {
 		fill := pt.col(c.header).median().over(GRP)
-		if c.transform == "hitFlag" {
+		if c.nullFill == "zero" {
 			fill = pt.lit(0)
 		}
 		imputeExprs = append(imputeExprs,
@@ -149,32 +154,7 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 	df = df.withColumns(pt.col("__zord").mean().over("__z").alias("__zr"))
 	df = df.withColumns(pt.col("__zr").truediv(pt.col("__n")).alias("score"))
 
-	// --- Table-display string for the convergence hit column ---
-	// The table renders convergence as "Hit"/"Not hit" per clonotype. A clonotype absent from
-	// the convergence input was null-filled to 0 above (= not a hit), so render it "Not hit"
-	// rather than a blank cell.
-	// Score column plus one display column per convergence hit feature. Built by appending
-	// each entry (never a spread) so an empty display set still leaves a valid one-column list.
 	saveColumns := [{ column: "score", spec: scoreSpec }]
-	for c in inputCols {
-		if c.spec.name == convColName {
-			df = df.withColumns(
-				pt.when(pt.col(c.header).eq(pt.lit(1))).
-					then(pt.lit("Hit")).
-					otherwise(pt.lit("Not hit")).
-					alias(c.header + "__disp"))
-			saveColumns = append(saveColumns, {
-				column: c.header + "__disp",
-				spec: {
-					kind: "PColumn",
-					name: c.spec.name,
-					valueType: "String",
-					domain: c.spec.domain,
-					annotations: c.spec.annotations
-				}
-			})
-		}
-	}
 
 	// The raw features of a subset run, so the plots show the subset's values only.
 	if !is_undefined(filterColumn) {
@@ -189,6 +169,18 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 					annotations: c.spec.annotations
 				}
 			})
+			if !is_undefined(c.addend) {
+				saveColumns = append(saveColumns, {
+					column: c.header + "__add__raw",
+					spec: {
+						kind: "PColumn",
+						name: c.addend.spec.name,
+						valueType: c.addend.spec.valueType,
+						domain: c.addend.spec.domain,
+						annotations: c.addend.spec.annotations
+					}
+				})
+			}
 		}
 	}
 
@@ -199,19 +191,16 @@ computeScore := func(inputCols, keyAxisSpec, scoreSpec, convColName, ...filterAr
 	})
 
 	cols := pUtil.pFrameToColumnsMap(ptWf.run().getFrameDirect("scoreFrame"))
-	hitDisplays := {}
-	for c in inputCols {
-		if c.spec.name == convColName {
-			hitDisplays[c.header] = cols[c.header + "__disp"]
-		}
-	}
 	subsetFeatures := {}
 	if !is_undefined(filterColumn) {
 		for c in inputCols {
 			subsetFeatures[c.header] = cols[c.header + "__raw"]
+			if !is_undefined(c.addend) {
+				subsetFeatures[c.header + "__add"] = cols[c.header + "__add__raw"]
+			}
 		}
 	}
-	return { score: cols["score"], hitDisplays: hitDisplays, subsetFeatures: subsetFeatures }
+	return { score: cols["score"], subsetFeatures: subsetFeatures }
 }
 
 export ll.toStrict({

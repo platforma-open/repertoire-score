@@ -2,11 +2,16 @@
 import type {
   FeatureKey,
   PresetFamily,
-  SelectableTier,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
+import type { RunTier } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
+  canonicalTier,
   defaultFeatureWeights,
   FEATURE_ORDER,
+  familySignals,
+  inertCustomWeights,
+  NT_MUTATIONS_CENTER,
+  scoreBlocker,
   TIER_LABELS,
 } from "@platforma-open/milaboratories.repertoire-score.model";
 import type { DatasetSelection } from "@platforma-sdk/model";
@@ -49,28 +54,40 @@ const weightModeOptions = [
   { value: "custom" as const, label: "Custom" },
 ];
 
-// Per-feature labels + zero-prior-knowledge explanations (weight editor rows).
+// Explanation of |Nt mutations − k| for centre k.
+function distanceTooltip(k: number): string {
+  return (
+    `How far the clonotype's nucleotide mutation count is from ${k}.\n` +
+    `${k} mutations give 0, and each mutation more or fewer adds 1. With the negative weight, ` +
+    `clonotypes nearer ${k} rank higher.`
+  );
+}
+
+// Per-feature labels (weight editor rows, saved-weights notice) and zero-prior-knowledge
+// explanations for the terms a preset scores (weight editor tooltips).
 const FEATURE_LABELS: Record<FeatureKey, string> = {
   cdrMutationFraction: "CDR mutation fraction",
-  aaMutationsCDR: "AA mutations (CDR)",
+  aaMutationsCDR: "AA mutations (CDR1 + CDR2)",
   aaMutationsFWR: "AA mutations (FWR)",
   ntMutations: "Nt mutations",
+  ntMutationsDistance: `|Nt mutations − ${NT_MUTATIONS_CENTER}|`,
+  heavyNtMutationsVJ: "Heavy-chain V+J nt mutations",
   logCells: "Abundance (log cells)",
   negLogPgen: "Generation probability (-log10)",
   negLogLightPgen: "Generation probability, light chain (-log10)",
+  nbFreq: "Convergence (neighbour frequency)",
   fastStar: "Convergence (fast-STAR)",
 };
-const FEATURE_TOOLTIPS: Record<FeatureKey, string> = {
-  cdrMutationFraction: "Fraction of CDR positions mutated from germline.",
-  aaMutationsCDR: "Number of amino-acid changes in the CDRs (the antigen-contact loops).",
-  aaMutationsFWR: "Number of amino-acid changes in the framework regions.",
-  ntMutations: "Total nucleotide substitutions from the germline V(D)J.",
-  logCells: "Clone size — supporting cells, log-compressed.",
+const FEATURE_TOOLTIPS: Partial<Record<FeatureKey, string>> = {
+  aaMutationsCDR: "Number of amino-acid changes in CDR1 and CDR2 (antigen-contact loops).",
+  ntMutationsDistance: distanceTooltip(NT_MUTATIONS_CENTER),
+  heavyNtMutationsVJ:
+    "Nucleotide substitutions from the germline in the heavy-chain V and J genes.",
   negLogPgen: "How rare the sequence is under random recombination; higher = rarer.",
   negLogLightPgen:
     "How rare the light-chain sequence is under random recombination; higher = rarer. A separate signal from the heavy chain.",
-  fastStar:
-    "Whether the clone sits in a convergent CDR3 neighbourhood — evidence of antigen-driven selection.",
+  nbFreq:
+    "How dense the clone's one-amino-acid CDR3 neighbourhood is in its sample (Clonotype Convergence's neighbour frequency) — a dense neighbourhood suggests antigen-driven selection.",
 };
 
 // The Custom dropdown lists only tiers reachable with the signals actually present.
@@ -81,22 +98,33 @@ const tierOptions = computed(() =>
   })),
 );
 
-// Optional signals absent from the pool -> the upstream block(s) that would supply them.
+// The message the run would stop with for this dataset and family (no VDJRegion mutation columns,
+// no heavy-chain count), shown before Run.
+const blocker = computed(() => {
+  const a = availability.value;
+  return a ? scoreBlocker(a, app.model.data.presetFamily) : undefined;
+});
+
+// Optional signals the family uses but absent from the pool -> the upstream block(s) that would
+// supply them.
 // Stated as a suggestion (a better score is possible), not an error, and neutrally: the same
 // message is correct whether the block simply isn't in the project OR is present but declined
 // to emit for this input (e.g. unsupported species). The user reads the block name and runs it
-// if their data allows. Only shown once the base (MiXCR) is present.
+// if their data allows. Only shown once the base (MiXCR) is present and the dataset can be scored.
+// Only the signals the selected family scores (standard: convergence; antigen-selected: Pgen) are
+// suggested.
 const missingSignalBlocks = computed<string[]>(() => {
   const a = availability.value;
-  if (!a || !a.hasMixcr) return [];
+  if (!a || !a.hasMixcr || blocker.value) return [];
   const out: string[] = [];
-  if (!a.hasPgen) out.push("Generation Probability");
-  if (!a.hasConvergence) out.push("Convergence Score");
+  const used = familySignals(app.model.data.presetFamily);
+  if (used.has("pgen") && !a.hasPgen) out.push("Generation Probability");
+  if (used.has("convergence") && !a.hasConvergence) out.push("Clonotype Convergence");
   return out;
 });
 
 // The suggestions banner is dismissible. Keep it dismissed only for the exact set shown, so it
-// reappears if a different signal goes missing (e.g. after switching to another dataset).
+// reappears if a different signal goes missing (e.g. after switching dataset or preset family).
 const dismissedSuggestions = ref<string | null>(null);
 const showSuggestions = computed(
   () =>
@@ -113,7 +141,8 @@ function setTierMode(mode: "default" | "custom") {
   app.model.data.tierMode = mode;
   if (mode === "custom") {
     const reachable = availability.value?.reachableTiers ?? [];
-    const current = app.model.data.tier;
+    const pinned = app.model.data.tier;
+    const current = pinned && canonicalTier(app.model.data.presetFamily, pinned);
     if (current === undefined || !reachable.includes(current)) {
       const auto = availability.value?.tier;
       app.model.data.tier = auto && auto !== "none" ? auto : reachable[reachable.length - 1];
@@ -121,11 +150,25 @@ function setTierMode(mode: "default" | "custom") {
   }
 }
 
+// The pinned tier as the family runs it: a tier the family does not offer (e.g. pinned with an
+// earlier version's presets) shows as `canonicalTier` maps it.
+const pinnedTier = computed<RunTier | undefined>({
+  get: () => {
+    const t = app.model.data.tier;
+    return t && canonicalTier(app.model.data.presetFamily, t);
+  },
+  set: (t) => {
+    app.model.data.tier = t;
+  },
+});
+
 // The tier the score would actually use: pinned in custom, else the auto pick.
-const resolvedTier = computed<SelectableTier | undefined>(() => {
+const resolvedTier = computed<RunTier | undefined>(() => {
   const a = availability.value;
   if (!a || a.tier === "none") return undefined;
-  if (app.model.data.tierMode === "custom" && app.model.data.tier) return app.model.data.tier;
+  if (app.model.data.tierMode === "custom" && app.model.data.tier) {
+    return canonicalTier(app.model.data.presetFamily, app.model.data.tier);
+  }
   return a.tier;
 });
 
@@ -162,10 +205,31 @@ function setWeight(feature: FeatureKey, v: number | undefined) {
 // Reset discards custom edits — the display then falls back to the preset defaults.
 function resetWeights() {
   app.model.data.customWeights = {};
+  app.model.data.ntMutationsCenter = undefined;
 }
 
 // Whether the weights are being edited (vs. using the calibrated preset defaults).
 const isCustomWeights = computed(() => app.model.data.weightMode === "custom");
+
+// Saved custom weights the family's presets do not score (e.g. kept from an earlier version's
+// presets): the run ignores them, and Reset to default clears them.
+const inertWeightsNotice = computed(() => {
+  if (!isCustomWeights.value) return undefined;
+  const inert = inertCustomWeights(app.model.data.presetFamily, app.model.data.customWeights);
+  if (inert.length === 0) return undefined;
+  return (
+    `Saved custom weights for ${inert.map((f) => FEATURE_LABELS[f]).join(", ")} are not part of ` +
+    `this preset and are ignored. Press Reset to default to clear them and use the current ` +
+    `preset weights.`
+  );
+});
+
+// The centre k of |Nt mutations − k| the run would use; editable in Custom mode only.
+const ntMutationsCenter = computed(() =>
+  isCustomWeights.value
+    ? (app.model.data.ntMutationsCenter ?? NT_MUTATIONS_CENTER)
+    : NT_MUTATIONS_CENTER,
+);
 
 // The composite the workflow will apply, as an ordered list of weighted terms (formula order).
 // The effective coefficient per feature is mode-dependent: "default" uses the preset coefficients
@@ -184,9 +248,11 @@ const formulaTerms = computed<FormulaTerm[]>(() => {
   return feats.map((f, i) => ({
     operator: i === 0 ? "" : "+",
     feature: f,
-    value: custom
-      ? (app.model.data.customWeights?.[f] ?? weightDefaults.value[f] ?? 0)
-      : (weightDefaults.value[f] ?? 0),
+    // The distance term's weight is fixed; its centre is edited instead.
+    value:
+      custom && f !== "ntMutationsDistance"
+        ? (app.model.data.customWeights?.[f] ?? weightDefaults.value[f] ?? 0)
+        : (weightDefaults.value[f] ?? 0),
     label: FEATURE_LABELS[f],
   }));
 });
@@ -200,6 +266,15 @@ function formatSigned(v: number): string {
 function onCoefInput(feature: FeatureKey, event: Event) {
   const v = Number.parseFloat((event.target as HTMLInputElement).value);
   setWeight(feature, Number.isNaN(v) ? undefined : Number(v.toFixed(2)));
+}
+
+// Commit an edited centre on change: rounded to a whole number; blank or negative is ignored.
+function onCenterInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const v = Math.round(Number.parseFloat(input.value));
+  if (!Number.isNaN(v) && v >= 0) app.model.data.ntMutationsCenter = v;
+  // Show the value in effect, also when the entry was rounded or ignored.
+  input.value = String(ntMutationsCenter.value);
 }
 </script>
 
@@ -222,6 +297,8 @@ function onCoefInput(feature: FeatureKey, event: Event) {
       or bait).
     </template>
   </PlDropdown>
+
+  <PlAlert v-if="blocker" type="warn">{{ blocker }}</PlAlert>
 
   <PlAlert v-if="showSuggestions" type="info" closeable @update:model-value="dismissSuggestions">
     Some variables are missing. Run above the following block(s) to generate a better score:
@@ -246,13 +323,13 @@ function onCoefInput(feature: FeatureKey, event: Event) {
   </PlBtnGroup>
   <PlDropdown
     v-if="app.model.data.tierMode === 'custom'"
-    v-model="app.model.data.tier"
+    v-model="pinnedTier"
     :options="tierOptions"
     label="Used variables"
   >
     <template #tooltip>
-      Each option builds on the <b>Base</b> (mutations + abundance, always from MiXCR); higher
-      options add more evidence when it is available upstream.
+      Each option builds on the <b>Base</b> (mutations, from MiXCR); the higher option adds the
+      signal this preset family scores when it is available upstream.
     </template>
   </PlDropdown>
 
@@ -270,24 +347,48 @@ function onCoefInput(feature: FeatureKey, event: Event) {
       <b>Custom</b> — edit the coefficients directly in the formula above.
     </template>
   </PlBtnGroup>
+  <PlAlert v-if="inertWeightsNotice" type="warn">{{ inertWeightsNotice }}</PlAlert>
   <div v-if="formulaTerms.length > 0">
     <div :class="$style.formulaBox">
       <div :class="$style.formulaTerms">
         <span v-for="t in formulaTerms" :key="t.feature" :class="$style.term">
           <span v-if="t.operator" :class="$style.op">{{ t.operator }}&nbsp;</span>
-          <input
-            :class="$style.coefInput"
-            type="text"
-            inputmode="decimal"
-            :disabled="!isCustomWeights"
-            :value="formatSigned(t.value)"
-            @change="(e) => onCoefInput(t.feature, e)"
-          />
-          <span>&nbsp;·&nbsp;</span>
-          <PlTooltip element="span" :class="$style.labelTip" position="top">
-            <span>{{ t.label }}</span>
-            <template #tooltip>{{ FEATURE_TOOLTIPS[t.feature] }}</template>
-          </PlTooltip>
+          <!-- |Nt mutations − k|: the weight is fixed text, the centre k is the editable value. -->
+          <template v-if="t.feature === 'ntMutationsDistance'">
+            <span :class="$style.fixedCoef">{{ formatSigned(t.value) }}</span>
+            <span>&nbsp;·&nbsp;</span>
+            <PlTooltip element="span" :class="$style.labelTip" position="top">
+              <span>|Nt mutations −</span>
+              <template #tooltip>
+                <span :class="$style.tooltipText">{{ distanceTooltip(ntMutationsCenter) }}</span>
+              </template>
+            </PlTooltip>
+            <span>&nbsp;</span>
+            <input
+              :class="[$style.coefInput, $style.centerInput]"
+              type="text"
+              inputmode="numeric"
+              :disabled="!isCustomWeights"
+              :value="ntMutationsCenter"
+              @change="onCenterInput"
+            />
+            <span>|</span>
+          </template>
+          <template v-else>
+            <input
+              :class="$style.coefInput"
+              type="text"
+              inputmode="decimal"
+              :disabled="!isCustomWeights"
+              :value="formatSigned(t.value)"
+              @change="(e) => onCoefInput(t.feature, e)"
+            />
+            <span>&nbsp;·&nbsp;</span>
+            <PlTooltip element="span" :class="$style.labelTip" position="top">
+              <span>{{ t.label }}</span>
+              <template #tooltip>{{ FEATURE_TOOLTIPS[t.feature] }}</template>
+            </PlTooltip>
+          </template>
         </span>
       </div>
     </div>
@@ -344,6 +445,10 @@ function onCoefInput(feature: FeatureKey, event: Event) {
   text-decoration: underline dotted var(--txt-03);
   text-underline-offset: 3px;
 }
+/* Keeps the line breaks (\n) of a tooltip text. */
+.tooltipText {
+  white-space: pre-line;
+}
 .coefInput {
   width: 4.5em;
   text-align: right;
@@ -366,6 +471,17 @@ function onCoefInput(feature: FeatureKey, event: Event) {
   -webkit-text-fill-color: var(--color-accent-default);
   opacity: 1;
   cursor: default;
+}
+/* A coefficient that is never editable: plain formula text, in the coefficients' column. */
+.fixedCoef {
+  display: inline-block;
+  width: 4.5em;
+  padding: 0 5px;
+  text-align: right;
+}
+/* The centre of |Nt mutations − k|: a short whole number. */
+.centerInput {
+  width: 2.5em;
 }
 /* Tighten the section's 24px flex gap above the Reset button. */
 .resetBtn {
