@@ -523,8 +523,8 @@ wf.body(func(args) {
 	}
 	tableFrame := tableBuilder.build()
 
-	// Diagnostic manifest: the per-column weights actually applied (post light-chain
-	// scaling) with each column's chain and source, for double-checking from the model.
+	// Diagnostic manifest: the per-column weights actually applied, with each column's chain and
+	// source, for double-checking from the model.
 	// canonical.encode gives sorted-key, deterministic bytes so the resource CID is stable
 	// across runs — plain json.encode would vary map key order and churn the CID.
 	scoreLogRes := smart.createValueResource(constants.RTYPE_JSON, canonical.encode({

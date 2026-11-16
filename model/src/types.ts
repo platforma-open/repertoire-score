@@ -29,6 +29,12 @@ export type BlockData = {
    * that fills these in.
    */
   optionalSignalRefs?: PlRef[];
+  /**
+   * The score features detected for `inputAnchor` (and `filterRef`), kept in sync by the UI so
+   * `argsIssues` can keep Run off when the run would stop on this dataset. `undefined` means not
+   * detected yet: Run stays on and the workflow's stop is the guard.
+   */
+  inputFeatures?: FeatureKey[];
   // User-editable block label.
   customBlockLabel?: string;
   /**
@@ -144,7 +150,7 @@ export type ScoreLogColumn = {
   /** Source PColumn name this feature was matched from. */
   sourceColumn: string;
   /** Raw->analysis mapping applied before ranking. */
-  transform: "identity" | "log1p" | "hitFlag" | "distance" | "sumVJ";
+  transform: "identity" | "distance" | "sumVJ";
   /** Coefficient actually applied to this feature. */
   coefficient: number;
   /** Centre k of a "distance" transform. */

@@ -9,7 +9,6 @@ import {
   defaultFeatureWeights,
   FEATURE_ORDER,
   familySignals,
-  inertCustomWeights,
   NT_MUTATIONS_CENTER,
   scoreBlocker,
   TIER_LABELS,
@@ -63,7 +62,7 @@ function distanceTooltip(k: number): string {
   );
 }
 
-// Per-feature labels (weight editor rows, saved-weights notice) and zero-prior-knowledge
+// Per-feature labels (weight editor rows) and zero-prior-knowledge
 // explanations for the terms a preset scores (weight editor tooltips).
 const FEATURE_LABELS: Record<FeatureKey, string> = {
   cdrMutationFraction: "CDR mutation fraction",
@@ -211,19 +210,6 @@ function resetWeights() {
 // Whether the weights are being edited (vs. using the calibrated preset defaults).
 const isCustomWeights = computed(() => app.model.data.weightMode === "custom");
 
-// Saved custom weights the family's presets do not score (e.g. kept from an earlier version's
-// presets): the run ignores them, and Reset to default clears them.
-const inertWeightsNotice = computed(() => {
-  if (!isCustomWeights.value) return undefined;
-  const inert = inertCustomWeights(app.model.data.presetFamily, app.model.data.customWeights);
-  if (inert.length === 0) return undefined;
-  return (
-    `Saved custom weights for ${inert.map((f) => FEATURE_LABELS[f]).join(", ")} are not part of ` +
-    `this preset and are ignored. Press Reset to default to clear them and use the current ` +
-    `preset weights.`
-  );
-});
-
 // The centre k of |Nt mutations − k| the run would use; editable in Custom mode only.
 const ntMutationsCenter = computed(() =>
   isCustomWeights.value
@@ -347,7 +333,6 @@ function onCenterInput(event: Event) {
       <b>Custom</b> — edit the coefficients directly in the formula above.
     </template>
   </PlBtnGroup>
-  <PlAlert v-if="inertWeightsNotice" type="warn">{{ inertWeightsNotice }}</PlAlert>
   <div v-if="formulaTerms.length > 0">
     <div :class="$style.formulaBox">
       <div :class="$style.formulaTerms">

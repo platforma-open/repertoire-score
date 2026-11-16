@@ -1,8 +1,5 @@
 <script setup lang="ts">
-import {
-  defaultSubtitle,
-  scoreBlocker,
-} from "@platforma-open/milaboratories.repertoire-score.model";
+import { defaultSubtitle } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
   PlAgDataTableV2,
   PlAlert,
@@ -35,17 +32,6 @@ const settingsOpen = computed({
   set: (open: boolean) => {
     if (!open && ui.activePanel === "settings") setPanel(null);
   },
-});
-
-// Blocking error only: the dataset carries no MiXCR mutation features, or the run would stop for
-// this preset family (the same text as the Settings notice). Absent otherwise — the "which
-// signals" read-out lives in Settings, not here.
-const scoreError = computed(() => {
-  const a = app.model.outputs.featureAvailability;
-  if (!a) return undefined;
-  return a.tier === "none"
-    ? "Cannot score: MiXCR clonotyping mutation features for this dataset not found."
-    : scoreBlocker(a, app.model.data.presetFamily);
 });
 
 // Results table: Clone Id + score + the metrics that fed it (from the workflow's tablePf).
@@ -83,19 +69,14 @@ const customBlockLabel = computed({
       Select a clonotype dataset in Settings to begin.
     </PlAlert>
 
-    <template v-else>
-      <PlAlert v-if="scoreError" type="warn">
-        {{ scoreError }}
-      </PlAlert>
-
-      <PlAgDataTableV2
-        v-model="app.model.data.tableState"
-        :settings="tableSettings"
-        show-columns-panel
-        show-export-button
-        not-ready-text="Press Run to compute the repertoire score."
-      />
-    </template>
+    <PlAgDataTableV2
+      v-else
+      v-model="app.model.data.tableState"
+      :settings="tableSettings"
+      show-columns-panel
+      show-export-button
+      not-ready-text="Press Run to compute the repertoire score."
+    />
   </PlBlockPage>
 
   <PlSlideModal v-model="settingsOpen" :shadow="true" width="40%">

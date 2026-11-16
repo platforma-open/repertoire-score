@@ -11,7 +11,6 @@ import {
   FEATURE_SIGNAL,
   familySignals,
   familyTiers,
-  inertCustomWeights,
   NT_MUTATIONS_CENTER,
   PRESET_COEFFICIENTS,
   reachableTiersFor,
@@ -103,28 +102,5 @@ describe("family tiers", () => {
     for (const family of FAMILIES) {
       expect(familyTiers(family)).toEqual(Object.keys(PRESET_COEFFICIENTS[family]));
     }
-  });
-});
-
-describe("inertCustomWeights", () => {
-  test("weights saved with the earlier presets are flagged, in display order", () => {
-    const saved = { fastStar: 0.5, logCells: 0.1, aaMutationsCDR: 0.15, ntMutations: 0.15 };
-    expect(inertCustomWeights("standard", saved)).toEqual(["ntMutations", "logCells", "fastStar"]);
-    expect(inertCustomWeights("antigen-selected", saved)).toEqual([
-      "ntMutations",
-      "logCells",
-      "fastStar",
-    ]);
-  });
-
-  test("a weight the other family scores is flagged", () => {
-    expect(inertCustomWeights("antigen-selected", { nbFreq: 2 })).toEqual(["nbFreq"]);
-    expect(inertCustomWeights("standard", { negLogPgen: 1 })).toEqual(["negLogPgen"]);
-  });
-
-  test("the family's own weights, or none, are not flagged", () => {
-    expect(inertCustomWeights("standard", { aaMutationsCDR: -0.5, nbFreq: 2 })).toEqual([]);
-    expect(inertCustomWeights("antigen-selected", undefined)).toEqual([]);
-    expect(inertCustomWeights("antigen-selected", {})).toEqual([]);
   });
 });

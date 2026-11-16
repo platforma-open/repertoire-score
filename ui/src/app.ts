@@ -11,8 +11,9 @@ import DistributionsPage from "./pages/DistributionsPage.vue";
 import MainPage from "./pages/MainPage.vue";
 
 export const sdkPlugin = defineAppV3(platforma, (app) => {
-  // Keep the optional-signal dependencies (Generation Probability, Convergence) live.
-  syncOptionalSignalRefs(app.model);
+  // Keep the optional-signal dependencies (Generation Probability, Convergence) and the Run gate
+  // live.
+  syncFromDetection(app.model);
   syncSubtitleLabel(app.model);
   return {
     routes: {
@@ -64,15 +65,20 @@ const sameDataset = (a: PlRef | undefined, b: PlRef | undefined): boolean =>
 const sameRefs = (a: readonly PlRef[], b: readonly PlRef[]): boolean =>
   a.length === b.length && a.every((ref, i) => plRefsEqual(ref, b[i]));
 
+const sameFeatures = (a: readonly string[] | undefined, b: readonly string[]): boolean =>
+  a !== undefined && a.length === b.length && a.every((f, i) => f === b[i]);
+
 /**
- * Keep `data.optionalSignalRefs` in step with the optional signals actually in the pool.
+ * Keep `data.optionalSignalRefs` and `data.inputFeatures` in step with what detection finds for
+ * the picked dataset.
  *
- * The args lambda cannot query the result pool, so the refs have to live in `data`. A
- * snapshot taken at pick time would not do: a signal block can be added, removed or
- * re-created afterwards, and the score has to follow.
+ * The args and argsIssues lambdas cannot query the result pool, so both have to live in `data`.
+ * The refs record the dependency on the signal blocks; the features let `argsIssues` keep Run off
+ * for a dataset the run would stop on. A snapshot taken at pick time would not do: a signal block
+ * can be added, removed or re-created afterwards, and the score has to follow.
  */
-function syncOptionalSignalRefs(model: AppModel) {
-  // A new dataset invalidates the previous one's refs. Back to unsynced, not `[]` — nothing
+function syncFromDetection(model: AppModel) {
+  // A new dataset invalidates the previous one's detection. Back to unsynced, not `[]` — nothing
   // knows yet what the new dataset carries.
   watch(
     () => model.data.inputAnchor,
@@ -82,6 +88,7 @@ function syncOptionalSignalRefs(model: AppModel) {
       if (previous === undefined) return;
       if (sameDataset(anchor, previous)) return;
       if (model.data.optionalSignalRefs !== undefined) model.data.optionalSignalRefs = undefined;
+      if (model.data.inputFeatures !== undefined) model.data.inputFeatures = undefined;
     },
   );
 
@@ -98,6 +105,8 @@ function syncOptionalSignalRefs(model: AppModel) {
       if (availability.subsetId !== (filter && columnIdFromPlRef(filter))) return;
       // Or the previous preset family, whose signals differ.
       if (availability.family !== model.data.presetFamily) return;
+      if (!sameFeatures(model.data.inputFeatures, availability.features))
+        model.data.inputFeatures = [...availability.features];
       const next = availability.optionalSignalRefs;
       const current = model.data.optionalSignalRefs;
       if (current !== undefined && sameRefs(current, next)) return;

@@ -122,19 +122,3 @@ const SAVED_TIER_SIGNALS: Record<SelectableTier, SignalKind[]> = {
 export function canonicalTier(family: PresetFamily, tier: SelectableTier): RunTier {
   return tierFor(family, new Set(SAVED_TIER_SIGNALS[tier]));
 }
-
-/**
- * Saved custom weights the family's presets do not score, in display order. The workflow ignores
- * them (e.g. `logCells` / `fastStar` saved with an earlier version's presets).
- */
-export function inertCustomWeights(
-  family: PresetFamily,
-  weights: Partial<Record<FeatureKey, number>> | undefined,
-): FeatureKey[] {
-  if (!weights) return [];
-  const scored = new Set<FeatureKey>();
-  for (const row of Object.values(PRESET_COEFFICIENTS[family])) {
-    for (const f of Object.keys(row) as FeatureKey[]) scored.add(f);
-  }
-  return FEATURE_ORDER.filter((f) => weights[f] !== undefined && !scored.has(f));
-}

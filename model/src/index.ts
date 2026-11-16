@@ -28,6 +28,7 @@ import {
   plRefsEqual,
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
+import { scoreBlocker } from "./blockers";
 import { defaultSubtitle } from "./label";
 import {
   canonicalTier,
@@ -429,6 +430,13 @@ const dataModel = new DataModelBuilder({ kind })
     ...rest,
     subtitleLabel: "",
   }))
+  // The earlier presets' variables and weights no longer apply, so an updated block starts on the
+  // new ones: Default weights and formula, its custom weights, centre and pinned tier dropped.
+  .migrate<BlockData>("v3", ({ customWeights: _, ntMutationsCenter: __, tier: ___, ...rest }) => ({
+    ...rest,
+    tierMode: "default",
+    weightMode: "default",
+  }))
   .init(({ params }) => ({
     customBlockLabel: params?.customBlockLabel ?? "",
     // The dataset's label comes from the result pool, which `init` cannot reach; the UI keeps
@@ -445,6 +453,7 @@ const dataModel = new DataModelBuilder({ kind })
     tier: params?.tier,
     weightMode: params?.weightMode ?? "default",
     customWeights: params?.customWeights,
+    ntMutationsCenter: params?.ntMutationsCenter,
     tableState: createPlDataTableStateV2(),
     graphStateHistogram: defaultGraphStateHistogram(),
     graphStateScatter: defaultGraphStateScatter(),
@@ -495,6 +504,13 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       featureOrder: FEATURE_ORDER,
       featureSignal: FEATURE_SIGNAL,
     };
+  })
+
+  // Run stays off when the workflow would stop on this dataset and family. Settings shows why.
+  .argsIssues(({ data }) => {
+    const blocker =
+      data.inputFeatures && scoreBlocker({ features: data.inputFeatures }, data.presetFamily);
+    return blocker ? [{ severity: "error" as const, message: blocker }] : [];
   })
 
   .prerunArgs((data) => {
@@ -648,8 +664,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     return specs;
   })
 
-  // Diagnostic manifest of the per-column weights actually applied (post light-chain
-  // scaling), each column's chain, and its source column — for double-checking the score.
+  // Diagnostic manifest of the per-column weights actually applied, each column's chain, and its
+  // source column — for double-checking the score.
   .output("scoreLog", (ctx): ScoreLog | undefined =>
     ctx.outputs?.resolve("scoreLog")?.getDataAsJsonOrUndefined<ScoreLog>(),
   )
