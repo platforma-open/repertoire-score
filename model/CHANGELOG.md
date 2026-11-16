@@ -1,5 +1,12 @@
 # @platforma-open/milaboratories.repertoire-score.model
 
+## 1.4.5
+
+### Patch Changes
+
+- Updated dependencies [f1916d1]
+  - @platforma-open/milaboratories.repertoire-score.kind@1.2.1
+
 ## 1.4.4
 
 ## 1.4.3

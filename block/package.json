@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.repertoire-score",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "files": [
     "dist",
     "block-pack"
