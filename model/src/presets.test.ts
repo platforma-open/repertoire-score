@@ -18,8 +18,7 @@ import {
 } from "./presets";
 import type { SignalKind } from "./types";
 
-// The decided vectors (temp_resources/repertoire-score-eval/01-decisions/
-// preset-coefficients-2026-11-06.md). The knot −|m − 6| is the distance |m − k| at weight −1.
+// The decided vectors. The knot −|m − 6| is the distance |m − k| at weight −1.
 const STANDARD_BASE = { ntMutationsDistance: -1, aaMutationsCDR: -0.25 };
 const STANDARD_CONV = { ...STANDARD_BASE, nbFreq: 1 };
 const AS_BASE = { heavyNtMutationsVJ: 1, aaMutationsCDR: 0.25 };
