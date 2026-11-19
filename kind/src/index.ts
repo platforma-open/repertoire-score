@@ -37,6 +37,8 @@ export type BlockParams = {
   tier?: SelectableTier;
   weightMode?: WeightMode;
   customWeights?: Partial<Record<FeatureKey, number>>;
+  /** Custom centre k of |nt mutations − k|; absent = the preset's. */
+  ntMutationsCenter?: number;
 };
 
 /** The same contract at runtime, for params arriving from a template file rather than typed code. */
@@ -53,6 +55,7 @@ function parseInitializationParams(value: unknown): BlockParams {
     tier,
     weightMode,
     customWeights,
+    ntMutationsCenter,
   } = value;
 
   if (inputAnchor !== undefined && !isPlRef(inputAnchor)) {
@@ -75,6 +78,12 @@ function parseInitializationParams(value: unknown): BlockParams {
   assertOneOf(weightMode, WEIGHT_MODES, "weightMode");
 
   if (customWeights !== undefined) assertCustomWeights(customWeights);
+  if (
+    ntMutationsCenter !== undefined &&
+    !(Number.isInteger(ntMutationsCenter) && (ntMutationsCenter as number) >= 0)
+  ) {
+    throw new Error("'ntMutationsCenter' must be a whole number, 0 or more.");
+  }
 
   return {
     inputAnchor,
@@ -86,6 +95,7 @@ function parseInitializationParams(value: unknown): BlockParams {
     tier: tier as SelectableTier | undefined,
     weightMode: weightMode as WeightMode | undefined,
     customWeights,
+    ntMutationsCenter: ntMutationsCenter as number | undefined,
   };
 }
 

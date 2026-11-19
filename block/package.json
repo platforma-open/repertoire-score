@@ -48,7 +48,7 @@
       "support": "mailto:support@milaboratories.com",
       "description": "A transparent, tunable per-clonotype score for antibody lead selection — it fuses maturation, abundance, convergence, and generation-probability signals.",
       "longDescription": "file:../docs/description.md",
-      "changelog": "file:../CHANGELOG.md",
+      "changelog": "file:CHANGELOG.md",
       "tags": [
         "airr",
         "vdj",

@@ -15,7 +15,8 @@ export type PresetFamily = "standard" | "antigen-selected";
 
 /**
  * A tier the user can pin in Custom mode. The baseline-absent "none" state is not
- * selectable — it means the block cannot score.
+ * selectable — it means the block cannot score. No family runs "3"; it stays so a block or
+ * template saved with 1.4.x still parses (the model maps it to a tier the family offers).
  */
 export type SelectableTier = "1" | "2a" | "2b" | "3";
 
@@ -24,16 +25,19 @@ export type WeightMode = "default" | "custom";
 
 /**
  * A single composite feature — the granularity the coefficients are defined at. One signal
- * can expand to several features (mutations → 4). Grouped back to signals in the UI.
+ * can expand to several features (mutations → 6). Grouped back to signals in the UI.
  */
 export type FeatureKey =
   | "cdrMutationFraction"
   | "aaMutationsCDR"
   | "aaMutationsFWR"
   | "ntMutations"
+  | "ntMutationsDistance"
+  | "heavyNtMutationsVJ"
   | "logCells"
   | "negLogPgen"
   | "negLogLightPgen"
+  | "nbFreq"
   | "fastStar";
 
 export const PRESET_FAMILIES: readonly PresetFamily[] = ["standard", "antigen-selected"];
@@ -44,8 +48,11 @@ export const FEATURE_KEYS: readonly FeatureKey[] = [
   "aaMutationsCDR",
   "aaMutationsFWR",
   "ntMutations",
+  "ntMutationsDistance",
+  "heavyNtMutationsVJ",
   "logCells",
   "negLogPgen",
   "negLogLightPgen",
+  "nbFreq",
   "fastStar",
 ];

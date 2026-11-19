@@ -28,11 +28,21 @@ import {
   plRefsEqual,
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
+import { scoreBlocker } from "./blockers";
 import { defaultSubtitle } from "./label";
-import { FEATURE_ORDER, FEATURE_SIGNAL, PRESET_COEFFICIENTS } from "./presets";
+import {
+  canonicalTier,
+  FEATURE_ORDER,
+  FEATURE_SIGNAL,
+  familySignals,
+  NT_MUTATIONS_CENTER,
+  PRESET_COEFFICIENTS,
+  reachableTiersFor,
+  tierFor,
+} from "./presets";
 import type {
   FeatureKey,
-  SelectableTier,
+  PresetFamily,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
 import type {
   BlockArgs,
@@ -43,6 +53,7 @@ import type {
   SignalKind,
 } from "./types";
 
+export * from "./blockers";
 export * from "./label";
 export * from "./presets";
 export * from "./types";
@@ -81,23 +92,42 @@ const inputAnchorSelectors: RelaxedColumnSelector[] = [
 // code across the TS/Tengo boundary, so any name added/changed here must be mirrored there —
 // otherwise the UI advertises a signal the workflow can't use (or vice-versa).
 //
-// MiXCR SHM mutation features — the current in-vivo score's set, isScore upstream.
+// MiXCR SHM mutation features, each with the composite feature it feeds.
 // The nucleotide-mutations signal column — also the default scatterplot Y axis.
 export const NT_MUTATIONS_COLUMN = "pl7.app/vdj/sequence/nMutations";
 export const CDR_MUTATION_FRACTION_COLUMN = "pl7.app/vdj/sequence/fractionCDRMutations";
-const MUTATION_COLUMN_NAMES = new Set([
-  "pl7.app/vdj/sequence/nAAMutationsCDR",
-  "pl7.app/vdj/sequence/nAAMutationsFWR",
-  NT_MUTATIONS_COLUMN,
-  CDR_MUTATION_FRACTION_COLUMN,
+const MUTATION_COLUMNS: ReadonlyMap<string, FeatureKey> = new Map<string, FeatureKey>([
+  ["pl7.app/vdj/sequence/nAAMutationsCDR", "aaMutationsCDR"],
+  ["pl7.app/vdj/sequence/nAAMutationsFWR", "aaMutationsFWR"],
+  [NT_MUTATIONS_COLUMN, "ntMutations"],
+  [CDR_MUTATION_FRACTION_COLUMN, "cdrMutationFraction"],
 ]);
+// Per-gene nucleotide mutation count; the gene ("V" / "J") is in the `pl7.app/vdj/gene` domain.
+// The V count (+ the J count, summed in the workflow) is `heavyNtMutationsVJ`.
+const NT_MUTATIONS_COUNT_COLUMN = "pl7.app/vdj/sequence/nMutationsCount";
 // Generation probability: the score consumes -log10(Pgen).
 const PGEN_COLUMN_NAME = "pl7.app/vdj/minlog10GenerationProbability";
-// Convergence signal = the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit").
+// Convergence: the fast-STAR Hit/Not-hit flag (a String column, "Hit"/"Not hit") and the
+// neighbour frequency it thresholds.
 const CONVERGENCE_FASTSTAR = "pl7.app/vdj/convergence/fastStar";
-// Every name `classifyFeature` recognizes outright — the host-side pre-filter for signal
+const CONVERGENCE_NBFREQ = "pl7.app/vdj/convergence/nbFreq";
+// Every name `classifyColumn` recognizes outright — the host-side pre-filter for signal
 // discovery. Abundance is not name-based, so it gets its own selector next to this one.
-const SIGNAL_COLUMN_NAMES = [PGEN_COLUMN_NAME, CONVERGENCE_FASTSTAR, ...MUTATION_COLUMN_NAMES];
+const SIGNAL_COLUMN_NAMES = [
+  PGEN_COLUMN_NAME,
+  CONVERGENCE_FASTSTAR,
+  CONVERGENCE_NBFREQ,
+  NT_MUTATIONS_COUNT_COLUMN,
+  ...MUTATION_COLUMNS.keys(),
+];
+
+const SC_CHAIN_DOMAIN = "pl7.app/vdj/scClonotypeChain";
+const SC_INDEX_DOMAIN = "pl7.app/vdj/scClonotypeChain/index";
+const CHAIN_DOMAIN = "pl7.app/vdj/chain";
+const GENE_DOMAIN = "pl7.app/vdj/gene";
+// Light chains, as a bulk dataset's key axis or a column's `pl7.app/vdj/chain` names them
+// (the workflow's LIGHT_BULK_CHAINS).
+const LIGHT_CHAINS: ReadonlySet<string> = new Set(["IGLight", "IGKappa", "IGLambda"]);
 
 // Signals produced by a block OTHER than the one the input anchor comes from, so this block
 // has to depend on each of them by ref (see BlockData.optionalSignalRefs). Mutations and
@@ -126,7 +156,13 @@ const isSubsetScore = (spec: PColumnSpec): boolean =>
 export const columnIdFromPlRef = (ref: PlRef): string =>
   JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
 
-export type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKind };
+export type SignalCandidate = {
+  id: string;
+  spec: PColumnSpec;
+  signal: SignalKind;
+  /** The composite feature the column feeds, when it feeds one by itself (not the J count). */
+  feature?: FeatureKey;
+};
 
 /**
  * Which Pgen and convergence columns a run on `subsetId` may use (undefined = full data).
@@ -138,11 +174,11 @@ export type SignalCandidate = { id: string; spec: PColumnSpec; signal: SignalKin
  *
  * The workflow applies the same rules (main.tpl.tengo), so the tier shown here is the tier run.
  */
-export function applySubsetRules(
-  candidates: SignalCandidate[],
+export function applySubsetRules<T extends SignalCandidate>(
+  candidates: T[],
   subsetId: string | undefined,
-): SignalCandidate[] {
-  const subsetOf = (c: SignalCandidate) => inputSubsetOf(c.spec.domain);
+): T[] {
+  const subsetOf = (c: T) => inputSubsetOf(c.spec.domain);
   const allowed = candidates.filter((c) => {
     if (c.signal === "convergence") return subsetOf(c) === subsetId;
     if (c.signal === "pgen") return subsetOf(c) === undefined || subsetOf(c) === subsetId;
@@ -150,7 +186,7 @@ export function applySubsetRules(
   });
   if (subsetId === undefined) return allowed;
   // The column's identity without the subset stamp: same name and chain, full vs subset run.
-  const sansSubset = (c: SignalCandidate) =>
+  const sansSubset = (c: T) =>
     c.spec.name +
     JSON.stringify(
       Object.entries(c.spec.domain ?? {})
@@ -167,25 +203,79 @@ export function applySubsetRules(
   );
 }
 
-/** Classify one upstream column spec into a composite signal kind, or undefined. */
-function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
+/**
+ * Bulk dataset of light-chain clonotypes only: its clonotype axis names a light chain. The scores
+ * are calibrated on heavy-chain and paired data, so the dataset picker does not offer it (and the
+ * workflow refuses it).
+ */
+export function isLightChainOnlyDataset(spec: PColumnSpec): boolean {
+  const keyAxis = spec.axesSpec[1];
+  const chain = keyAxis?.domain?.[CHAIN_DOMAIN];
+  return (
+    keyAxis?.name === "pl7.app/vdj/clonotypeKey" && chain !== undefined && LIGHT_CHAINS.has(chain)
+  );
+}
+
+/** Whether a column belongs to a light chain: the single-cell "B" slot, or a light bulk chain. */
+function isLightChainColumn(spec: PColumnSpec): boolean {
+  const scChain = spec.domain?.[SC_CHAIN_DOMAIN];
+  if (scChain !== undefined) return scChain === "B";
+  const chain = spec.domain?.[CHAIN_DOMAIN];
+  return chain !== undefined && LIGHT_CHAINS.has(chain);
+}
+
+/**
+ * Classify one upstream column spec into its signal kind and the composite feature it feeds —
+ * the workflow's `classify` plus its light-chain routing (`resolveFeature`), and the columns only
+ * the plots use (CDR mutation fraction, framework AA mutations, abundance, fast-STAR), which the
+ * workflow does not classify. Undefined = unused.
+ */
+export function classifyColumn(
+  spec: PColumnSpec,
+): { signal: SignalKind; feature?: FeatureKey } | undefined {
   const name = spec.name;
   const ann = spec.annotations;
-  if (name === PGEN_COLUMN_NAME) return "pgen";
-  if (name === CONVERGENCE_FASTSTAR) return "convergence";
-  // Abundance total only — mirror the workflow's rule: raw count (not a normalized fraction),
-  // and a clonal-size unit (cells / reads / molecules), never `samples` (sample-count is
-  // clonotype prevalence, not abundance). Keeps sample-count and fractions out of both tier
-  // detection and the histogram value picker.
+  const isLight = isLightChainColumn(spec);
+  if (name === PGEN_COLUMN_NAME) {
+    return { signal: "pgen", feature: isLight ? "negLogLightPgen" : "negLogPgen" };
+  }
+  // Convergence is heavy-chain only.
+  if (name === CONVERGENCE_FASTSTAR) {
+    return { signal: "convergence", ...(!isLight && { feature: "fastStar" as const }) };
+  }
+  if (name === CONVERGENCE_NBFREQ) {
+    return { signal: "convergence", ...(!isLight && { feature: "nbFreq" as const }) };
+  }
+  // Abundance total only: raw count (not a normalized fraction), and a clonal-size unit (cells /
+  // reads / molecules), never `samples` (sample-count is clonotype prevalence, not abundance).
+  // Keeps sample-count and fractions out of the plots' value picker.
   if (
     ann?.["pl7.app/isAbundance"] === "true" &&
     ann["pl7.app/abundance/normalized"] !== "true" &&
     ann["pl7.app/abundance/unit"] !== "samples"
   ) {
-    return "abundance";
+    return { signal: "abundance", feature: "logCells" };
   }
-  if (MUTATION_COLUMN_NAMES.has(name)) return "mutations";
+  const mutation = MUTATION_COLUMNS.get(name);
+  if (mutation) return { signal: "mutations", feature: mutation };
+  if (name === NT_MUTATIONS_COUNT_COLUMN) {
+    // Single-cell: the primary chain of each slot only.
+    const index = spec.domain?.[SC_INDEX_DOMAIN];
+    if (index !== undefined && index !== "primary") return undefined;
+    const gene = spec.domain?.[GENE_DOMAIN];
+    // The J count is only summed into the V count; a light-chain V count is not the heavy one.
+    if (gene === "V") {
+      return { signal: "mutations", ...(!isLight && { feature: "heavyNtMutationsVJ" as const }) };
+    }
+    if (gene === "J") return { signal: "mutations" };
+    return undefined;
+  }
   return undefined;
+}
+
+/** Classify one upstream column spec into a composite signal kind, or undefined. */
+function classifyFeature(spec: PColumnSpec): SignalKind | undefined {
+  return classifyColumn(spec)?.signal;
 }
 
 /**
@@ -227,15 +317,18 @@ function perClonotypeColumns(ref: PlRef): ColumnsCollection | undefined {
 }
 
 /**
- * Detect which composite signal families are present for the selected dataset, the implied
- * preset tier, and the refs of the optional (cross-block) signals the block must depend on.
- * Pure spec read over the result pool — no Run required.
+ * Detect which composite signal families are present for the selected dataset, the tier `family`
+ * would run, and the refs of the optional (cross-block) signals it must depend on. A signal the
+ * family does not score counts for neither. Pure spec read over the result pool — no Run required.
  */
-function detectFeatures(ref: PlRef, subsetId?: string): FeatureAvailability | undefined {
+function detectFeatures(
+  ref: PlRef,
+  family: PresetFamily,
+  subsetId?: string,
+): FeatureAvailability | undefined {
   const perClonotype = perClonotypeColumns(ref);
   if (!perClonotype) return undefined;
-
-  // Narrow host-side to what `classifyFeature` can possibly recognize; the abundance rule
+  // Narrow host-side to what `classifyColumn` can possibly recognize; the abundance rule
   // compares annotation values, so those few survivors still get their spec read.
   const candidates = perClonotype
     .filter({
@@ -248,50 +341,41 @@ function detectFeatures(ref: PlRef, subsetId?: string): FeatureAvailability | un
 
   const classified = candidates.flatMap((col) => {
     const spec = col.getSpec();
-    const signal = classifyFeature(spec);
-    return signal ? [{ id: extractPObjectId(col.id), spec, signal }] : [];
+    const cl = classifyColumn(spec);
+    return cl ? [{ id: extractPObjectId(col.id), spec, ...cl }] : [];
   });
 
+  const used = familySignals(family);
   const signals = new Set<SignalKind>();
+  const features = new Set<FeatureKey>();
   // Leaf ids of the optional signals. Collected as canonical id strings so the set can be deduped and
   // sorted into an order identical across renders.
   const optionalIds = new Set<string>();
-  for (const { id, signal } of applySubsetRules(classified, subsetId)) {
+  for (const { id, signal, feature } of applySubsetRules(classified, subsetId)) {
     signals.add(signal);
-    if (OPTIONAL_SIGNALS.has(signal)) optionalIds.add(id);
+    if (feature) features.add(feature);
+    if (OPTIONAL_SIGNALS.has(signal) && used.has(signal)) optionalIds.add(id);
   }
+  // The distance feature reads the total count's column.
+  if (features.has("ntMutations")) features.add("ntMutationsDistance");
   const optionalSignalRefs = [...optionalIds]
     .sort()
     .map((id) => parseJsonSafely<unknown>(id))
     .filter(isPlRef);
 
-  const hasMixcr = signals.has("mutations") || signals.has("abundance");
-  const hasPgen = signals.has("pgen");
-  const hasConvergence = signals.has("convergence");
-
-  let tier: FeatureAvailability["tier"] = "none";
-  const reachableTiers: SelectableTier[] = [];
-  if (hasMixcr) {
-    reachableTiers.push("1");
-    if (hasConvergence) reachableTiers.push("2a");
-    if (hasPgen) reachableTiers.push("2b");
-    if (hasPgen && hasConvergence) reachableTiers.push("3");
-
-    if (hasPgen && hasConvergence) tier = "3";
-    else if (hasPgen) tier = "2b";
-    else if (hasConvergence) tier = "2a";
-    else tier = "1";
-  }
+  const hasMixcr = signals.has("mutations");
 
   return {
-    signals: [...signals].sort(),
-    tier,
-    reachableTiers,
+    // The family's rows pick its tier, so a signal it does not score has no say.
+    tier: hasMixcr ? tierFor(family, signals) : "none",
+    reachableTiers: hasMixcr ? reachableTiersFor(family, signals) : [],
     hasMixcr,
-    hasPgen,
-    hasConvergence,
+    hasPgen: signals.has("pgen"),
+    hasConvergence: signals.has("convergence"),
+    features: FEATURE_ORDER.filter((f) => features.has(f)),
     optionalSignalRefs,
     anchor: ref,
+    family,
     ...(subsetId !== undefined && { subsetId }),
   };
 }
@@ -303,6 +387,8 @@ function canonicalWeights(
   if (!w) return undefined;
   const out: Partial<Record<FeatureKey, number>> = {};
   for (const k of (Object.keys(w) as FeatureKey[]).sort()) {
+    // Its weight is fixed at the preset's; only its centre is editable.
+    if (k === "ntMutationsDistance") continue;
     const v = w[k];
     if (v !== undefined) out[k] = v;
   }
@@ -344,6 +430,13 @@ const dataModel = new DataModelBuilder({ kind })
     ...rest,
     subtitleLabel: "",
   }))
+  // The earlier presets' variables and weights no longer apply, so an updated block starts on the
+  // new ones: Default weights and formula, its custom weights, centre and pinned tier dropped.
+  .migrate<BlockData>("v3", ({ customWeights: _, ntMutationsCenter: __, tier: ___, ...rest }) => ({
+    ...rest,
+    tierMode: "default",
+    weightMode: "default",
+  }))
   .init(({ params }) => ({
     customBlockLabel: params?.customBlockLabel ?? "",
     // The dataset's label comes from the result pool, which `init` cannot reach; the UI keeps
@@ -360,6 +453,7 @@ const dataModel = new DataModelBuilder({ kind })
     tier: params?.tier,
     weightMode: params?.weightMode ?? "default",
     customWeights: params?.customWeights,
+    ntMutationsCenter: params?.ntMutationsCenter,
     tableState: createPlDataTableStateV2(),
     graphStateHistogram: defaultGraphStateHistogram(),
     graphStateScatter: defaultGraphStateScatter(),
@@ -373,11 +467,12 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     // carries only intent. Preset family + tier choice + weights select the score,
     // so they stale the block.
     //
-    // Custom weights count only when the mode is "custom" AND at least one weight is
-    // actually set. "Custom with no edits" collapses to "default": identical args (no
-    // spurious re-run) and cleaner provenance (unedited custom = the base preset).
+    // Custom weights (or the custom nt-mutation centre) count only when the mode is "custom"
+    // AND at least one is actually set. "Custom with no edits" collapses to "default": identical
+    // args (no spurious re-run) and cleaner provenance (unedited custom = the base preset).
     const customWeights =
       data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
+    const customCenter = data.weightMode === "custom" ? data.ntMutationsCenter : undefined;
     return {
       // As stored, `requireEnrichments` and all. Never added here — only carried, until the
       // sync in ui/src/app.ts has the refs to replace it with.
@@ -392,10 +487,15 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       presetFamily: data.presetFamily,
       tierMode: data.tierMode,
       // Pinned tier only matters in custom mode; drop it in default so a stale
-      // pin can't stale the block or reach the workflow.
-      tier: data.tierMode === "custom" ? data.tier : undefined,
-      weightMode: customWeights ? "custom" : "default",
+      // pin can't stale the block or reach the workflow. A tier the family does not offer (e.g.
+      // one pinned with an earlier version's presets) runs as `canonicalTier` maps it.
+      tier:
+        data.tierMode === "custom" && data.tier !== undefined
+          ? canonicalTier(data.presetFamily, data.tier)
+          : undefined,
+      weightMode: customWeights || customCenter !== undefined ? "custom" : "default",
       customWeights,
+      ntMutationsCenter: customCenter ?? NT_MUTATIONS_CENTER,
       // Ship the calibrated coefficients for the chosen family; the workflow picks the
       // tier row once it knows which signals the input actually carries.
       coefficients: PRESET_COEFFICIENTS[data.presetFamily],
@@ -404,6 +504,13 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
       featureOrder: FEATURE_ORDER,
       featureSignal: FEATURE_SIGNAL,
     };
+  })
+
+  // Run stays off when the workflow would stop on this dataset and family. Settings shows why.
+  .argsIssues(({ data }) => {
+    const blocker =
+      data.inputFeatures && scoreBlocker({ features: data.inputFeatures }, data.presetFamily);
+    return blocker ? [{ severity: "error" as const, message: blocker }] : [];
   })
 
   .prerunArgs((data) => {
@@ -431,6 +538,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     tier: data.tier,
     weightMode: data.weightMode,
     customWeights: data.customWeights,
+    ntMutationsCenter: data.ntMutationsCenter,
   }))
 
   // Datasets, each with its subset columns (`pl7.app/isSubset`, e.g. repertoire-labeling labels
@@ -450,7 +558,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
           spec.annotations?.["pl7.app/isAnchor"] === "true" &&
           spec.axesSpec.length === 2 &&
           spec.axesSpec[0].name === "pl7.app/sampleId" &&
-          DATASET_KEY_AXES.has(spec.axesSpec[1].name),
+          DATASET_KEY_AXES.has(spec.axesSpec[1].name) &&
+          !isLightChainOnlyDataset(spec),
         // Only subsets keyed by the clonotype axis alone: the score is per clonotype.
         filter: (spec) =>
           isPColumnSpec(spec) &&
@@ -469,6 +578,7 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     ctx.data.inputAnchor
       ? detectFeatures(
           ctx.data.inputAnchor,
+          ctx.data.presetFamily,
           ctx.data.filterRef && columnIdFromPlRef(ctx.data.filterRef),
         )
       : undefined,
@@ -554,8 +664,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     return specs;
   })
 
-  // Diagnostic manifest of the per-column weights actually applied (post light-chain
-  // scaling), each column's chain, and its source column — for double-checking the score.
+  // Diagnostic manifest of the per-column weights actually applied, each column's chain, and its
+  // source column — for double-checking the score.
   .output("scoreLog", (ctx): ScoreLog | undefined =>
     ctx.outputs?.resolve("scoreLog")?.getDataAsJsonOrUndefined<ScoreLog>(),
   )

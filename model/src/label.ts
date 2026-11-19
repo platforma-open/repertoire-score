@@ -1,24 +1,25 @@
-import type { SelectableTier } from "@platforma-open/milaboratories.repertoire-score.kind";
-import type { BlockData } from "./types";
+import { canonicalTier } from "./presets";
+import type { BlockData, RunTier } from "./types";
 
-// User-facing tier names — by signals, not tier ids. "Base" = the mutations + abundance
-// MiXCR floor that every tier includes; higher tiers add signals on top.
-export const TIER_LABELS: Record<SelectableTier, string> = {
-  "1": "Base: mutations + abundance",
+// User-facing tier names — by signals, not tier ids. "Base" = the MiXCR mutation terms every tier
+// includes; a family's second tier adds its signal on top (`familyTiers`).
+export const TIER_LABELS: Record<RunTier, string> = {
+  "1": "Base: mutations",
   "2a": "Base + Convergence",
   "2b": "Base + Generation probability",
-  "3": "Base + Convergence + Generation probability",
 };
 
 /**
  * Subtitle shown when the user has not set a custom block label: the dataset's label, then the
- * tier when the user pinned one. In the default tier mode the tier follows the signals present
- * in the result pool, which the subtitle cannot see, so it is not named.
+ * tier when the user pinned one (as the family runs it). In the default tier mode the tier follows
+ * the signals present in the result pool, which the subtitle cannot see, so it is not named.
  */
 export function defaultSubtitle(
-  data: Pick<BlockData, "subtitleLabel" | "tierMode" | "tier">,
+  data: Pick<BlockData, "subtitleLabel" | "tierMode" | "tier" | "presetFamily">,
 ): string {
   const tierLabel =
-    data.tierMode === "custom" && data.tier !== undefined ? TIER_LABELS[data.tier] : undefined;
+    data.tierMode === "custom" && data.tier !== undefined
+      ? TIER_LABELS[canonicalTier(data.presetFamily, data.tier)]
+      : undefined;
   return [data.subtitleLabel, tierLabel].filter(Boolean).join(" · ");
 }

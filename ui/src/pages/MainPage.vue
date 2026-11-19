@@ -34,15 +34,6 @@ const settingsOpen = computed({
   },
 });
 
-// Blocking error only: the dataset carries no MiXCR mutation/abundance features, so the block
-// cannot score. Absent otherwise — the "which signals" read-out lives in Settings, not here.
-const scoreError = computed(() => {
-  const a = app.model.outputs.featureAvailability;
-  return a && a.tier === "none"
-    ? "Cannot score: MiXCR clonotyping features (mutations / abundance) not found for this dataset."
-    : undefined;
-});
-
 // Results table: Clone Id + score + the metrics that fed it (from the workflow's tablePf).
 const tableSettings = usePlDataTableSettingsV2({
   model: () => app.model.outputs.scoreTable,
@@ -78,19 +69,14 @@ const customBlockLabel = computed({
       Select a clonotype dataset in Settings to begin.
     </PlAlert>
 
-    <template v-else>
-      <PlAlert v-if="scoreError" type="warn">
-        {{ scoreError }}
-      </PlAlert>
-
-      <PlAgDataTableV2
-        v-model="app.model.data.tableState"
-        :settings="tableSettings"
-        show-columns-panel
-        show-export-button
-        not-ready-text="Press Run to compute the repertoire score."
-      />
-    </template>
+    <PlAgDataTableV2
+      v-else
+      v-model="app.model.data.tableState"
+      :settings="tableSettings"
+      show-columns-panel
+      show-export-button
+      not-ready-text="Press Run to compute the repertoire score."
+    />
   </PlBlockPage>
 
   <PlSlideModal v-model="settingsOpen" :shadow="true" width="40%">
