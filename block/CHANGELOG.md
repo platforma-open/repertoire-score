@@ -1,5 +1,12 @@
 # @platforma-open/milaboratories.repertoire-score
 
+## 2.1.0
+
+### Minor Changes
+
+- 6b235be: Two Repertoire Score blocks on the same dataset now both appear in the blocks below, each named by its block label.
+  Updating re-runs the block and the blocks that use its score.
+
 ## 2.0.0
 
 ### Major Changes
