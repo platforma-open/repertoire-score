@@ -443,11 +443,13 @@ wf.body(func(args) {
 		scoreDomain[SUBSET_DOMAIN] = args.inputFilter
 	}
 
+	blockId := wf.blockId().getDataAsJson()
 	scoreSpec := {
 		kind: "PColumn",
 		name: "pl7.app/vdj/repertoireScore",
 		valueType: "Double",
 		domain: scoreDomain,
+		contextDomain: { "pl7.app/blockId": blockId },
 		annotations: {
 			"pl7.app/isScore": "true",
 			"pl7.app/label": "Repertoire score",
@@ -470,9 +472,10 @@ wf.body(func(args) {
 	scoreCol := scoreResult.score
 
 	// --- Inject provenance trace and export. ---
-	traceLabel := "Repertoire Score"
-	if !is_undefined(datasetSpec.annotations) && !is_undefined(datasetSpec.annotations["pl7.app/label"]) {
-		traceLabel = datasetSpec.annotations["pl7.app/label"]
+	// The custom block label, else the default label of the tier that ran.
+	traceLabel := args.customBlockLabel
+	if is_undefined(traceLabel) {
+		traceLabel = args.defaultLabels[tier]
 	}
 	// With a subset filter the trace roots in the filter: its own trace is dataset -> the
 	// block that made the subset (e.g. Repertoire Labeling), so downstream labels name it.
@@ -482,6 +485,7 @@ wf.body(func(args) {
 	}
 	trace := pSpec.makeTrace(traceSourceSpec, {
 		type: "milaboratories.repertoire-score",
+		id: blockId,
 		importance: 30,
 		label: traceLabel
 	})

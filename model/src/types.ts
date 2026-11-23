@@ -37,10 +37,7 @@ export type BlockData = {
   inputFeatures?: FeatureKey[];
   // User-editable block label.
   customBlockLabel?: string;
-  /**
-   * The dataset's (or subset's) label as the result pool shows it, kept in sync by the UI;
-   * feeds the subtitle only, never the workflow.
-   */
+  /** The dataset's (or subset's) label the subtitle showed up to 2.0.0. No longer written or read. */
   subtitleLabel?: string;
   presetFamily: PresetFamily;
   // Scoring-signals control:
@@ -94,6 +91,10 @@ export type BlockArgs = {
   featureSignal: Record<FeatureKey, SignalKind>;
   /** Centre k of `ntMutationsDistance` = |nt mutations − k| (presets.ts NT_MUTATIONS_CENTER). */
   ntMutationsCenter: number;
+  /** The score's trace label. Absent without a custom block label. */
+  customBlockLabel?: string;
+  /** The trace label per tier when there is no custom block label (`scoreLabels`). */
+  defaultLabels: Partial<Record<RunTier, string>>;
 };
 
 /**

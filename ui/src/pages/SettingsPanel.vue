@@ -5,8 +5,10 @@ import type {
 } from "@platforma-open/milaboratories.repertoire-score.kind";
 import type { RunTier } from "@platforma-open/milaboratories.repertoire-score.model";
 import {
+  appliedWeightMode,
   canonicalTier,
   defaultFeatureWeights,
+  FAMILY_LABELS,
   FEATURE_ORDER,
   familySignals,
   NT_MUTATIONS_CENTER,
@@ -38,9 +40,19 @@ const app = useApp();
 const availability = computed(() => app.model.outputs.featureAvailability);
 
 // Preset family is the primary user-facing configuration for this block.
-const familyOptions: { value: PresetFamily; label: string }[] = [
-  { value: "standard", label: "Standard" },
-  { value: "antigen-selected", label: "Antigen-selected" },
+const familyOptions: { value: PresetFamily; label: string; description: string }[] = [
+  {
+    value: "standard",
+    label: FAMILY_LABELS.standard,
+    description:
+      "No antigen-binding sort before sequencing. Ranks clonotypes by how likely they are to bind.",
+  },
+  {
+    value: "antigen-selected",
+    label: FAMILY_LABELS["antigen-selected"],
+    description:
+      "Cells enriched for antigen binding first (e.g. FACS with a tetramer or bait). Ranks binders by likely affinity.",
+  },
 ];
 
 const tierModeOptions = [
@@ -207,8 +219,19 @@ function resetWeights() {
   app.model.data.ntMutationsCenter = undefined;
 }
 
+// Edits belong to the family they were made under: a feature both families score has a different
+// preset weight in each (CDR mutations −0.25 vs +0.25), so a family change starts from its preset.
+function setFamily(family: PresetFamily | undefined) {
+  if (family === undefined || family === app.model.data.presetFamily) return;
+  app.model.data.presetFamily = family;
+  resetWeights();
+}
+
 // Whether the weights are being edited (vs. using the calibrated preset defaults).
 const isCustomWeights = computed(() => app.model.data.weightMode === "custom");
+
+// Whether an edit the family scores is set, so Reset has something to undo.
+const hasAppliedEdits = computed(() => appliedWeightMode(app.model.data) === "custom");
 
 // The centre k of |Nt mutations − k| the run would use; editable in Custom mode only.
 const ntMutationsCenter = computed(() =>
@@ -275,7 +298,12 @@ function onCenterInput(event: Event) {
     <template #tooltip> MiXCR clonotyping output to score. </template>
   </PlDatasetSelector>
 
-  <PlDropdown v-model="app.model.data.presetFamily" :options="familyOptions" label="Preset family">
+  <PlDropdown
+    :model-value="app.model.data.presetFamily"
+    :options="familyOptions"
+    label="Preset family"
+    @update:model-value="setFamily"
+  >
     <template #tooltip>
       Describes how the sample was prepared — this selects the scoring recipe.<br />
       <b>Standard</b> — an immunised repertoire with no antigen-binding pre-sort.<br />
@@ -379,7 +407,7 @@ function onCenterInput(event: Event) {
     </div>
   </div>
   <PlBtnGhost
-    v-if="isCustomWeights && formulaTerms.length > 0"
+    v-if="hasAppliedEdits && formulaTerms.length > 0"
     :class="$style.resetBtn"
     @click.stop="resetWeights"
   >

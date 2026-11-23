@@ -2,6 +2,7 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
+  WeightMode,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
 import type { RunTier, SignalKind } from "./types";
 
@@ -67,6 +68,74 @@ export function defaultFeatureWeights(
   tier: RunTier,
 ): Partial<Record<FeatureKey, number>> {
   return PRESET_COEFFICIENTS[family][tier] ?? {};
+}
+
+/** The features a family's presets score at any tier. */
+function familyFeatures(family: PresetFamily): Set<FeatureKey> {
+  const used = new Set<FeatureKey>();
+  for (const row of Object.values(PRESET_COEFFICIENTS[family])) {
+    for (const f of Object.keys(row) as FeatureKey[]) used.add(f);
+  }
+  return used;
+}
+
+/** Whether `v` is the family's preset weight for `feature` in every tier that scores it. */
+function isPresetWeight(family: PresetFamily, feature: FeatureKey, v: number): boolean {
+  return Object.values(PRESET_COEFFICIENTS[family]).every(
+    (row) => row[feature] === undefined || row[feature] === v,
+  );
+}
+
+/**
+ * The custom weights that change the family's preset, with sorted keys so the args stale-gate
+ * keys on meaning, not order. Weights for features the family doesn't score (e.g. kept from the
+ * other family) and weights equal to the preset's are left out.
+ */
+export function canonicalWeights(
+  w: Partial<Record<FeatureKey, number>> | undefined,
+  family: PresetFamily,
+): Partial<Record<FeatureKey, number>> | undefined {
+  if (!w) return undefined;
+  const scored = familyFeatures(family);
+  const out: Partial<Record<FeatureKey, number>> = {};
+  for (const k of (Object.keys(w) as FeatureKey[]).sort()) {
+    // Its weight is fixed at the preset's; only its centre is editable.
+    if (k === "ntMutationsDistance" || !scored.has(k)) continue;
+    const v = w[k];
+    if (v !== undefined && !isPresetWeight(family, k, v)) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+type WeightData = {
+  presetFamily: PresetFamily;
+  weightMode: WeightMode;
+  customWeights?: Partial<Record<FeatureKey, number>>;
+  ntMutationsCenter?: number;
+};
+
+/**
+ * The custom centre k of |nt mutations − k|, when Custom is on, the family scores the term and k
+ * is not the preset's.
+ */
+export function appliedCenter(data: WeightData): number | undefined {
+  if (data.weightMode !== "custom") return undefined;
+  const k = data.ntMutationsCenter;
+  return familyFeatures(data.presetFamily).has("ntMutationsDistance") && k !== NT_MUTATIONS_CENTER
+    ? k
+    : undefined;
+}
+
+/**
+ * The weight mode the run uses: "custom" only when a custom weight or centre changes the family's
+ * preset, so Custom with no such edit runs as Default.
+ */
+export function appliedWeightMode(data: WeightData): WeightMode {
+  if (data.weightMode !== "custom") return "default";
+  return canonicalWeights(data.customWeights, data.presetFamily) ||
+    appliedCenter(data) !== undefined
+    ? "custom"
+    : "default";
 }
 
 /** The signals a family's presets score at any tier. */
