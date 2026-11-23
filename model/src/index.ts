@@ -29,9 +29,12 @@ import {
 } from "@platforma-sdk/model";
 import { kind } from "@platforma-open/milaboratories.repertoire-score.kind";
 import { scoreBlocker } from "./blockers";
-import { defaultSubtitle } from "./label";
+import { defaultSubtitle, scoreLabels } from "./label";
 import {
+  appliedCenter,
+  appliedWeightMode,
   canonicalTier,
+  canonicalWeights,
   FEATURE_ORDER,
   FEATURE_SIGNAL,
   familySignals,
@@ -380,21 +383,6 @@ function detectFeatures(
   };
 }
 
-/** Canonicalise custom weights (sorted keys) so the args stale-gate keys on meaning, not order. */
-function canonicalWeights(
-  w: Partial<Record<FeatureKey, number>> | undefined,
-): Partial<Record<FeatureKey, number>> | undefined {
-  if (!w) return undefined;
-  const out: Partial<Record<FeatureKey, number>> = {};
-  for (const k of (Object.keys(w) as FeatureKey[]).sort()) {
-    // Its weight is fixed at the preset's; only its centre is editable.
-    if (k === "ntMutationsDistance") continue;
-    const v = w[k];
-    if (v !== undefined) out[k] = v;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
 /** Default state for the Distributions histogram: binned counts, solid bars. */
 export const defaultGraphStateHistogram = (): GraphMakerState => ({
   title: "Variable distributions",
@@ -424,8 +412,8 @@ export const defaultGraphStateScatter = (): GraphMakerState => ({
 // cannot query the pool, so it has no refs to replace that dependency with. The UI does it.
 const dataModel = new DataModelBuilder({ kind })
   .from<BlockDataV1>("v1")
-  // The old label mixed the dataset's result-pool label with the resolved tier; the pinned tier
-  // is recomputed from data, and the dataset part returns when the block is opened.
+  // The old label mixed the dataset's result-pool label with the resolved tier; the subtitle is
+  // recomputed from data.
   .migrate<BlockData>("v2", ({ defaultBlockLabel: _, ...rest }) => ({
     ...rest,
     subtitleLabel: "",
@@ -439,9 +427,6 @@ const dataModel = new DataModelBuilder({ kind })
   }))
   .init(({ params }) => ({
     customBlockLabel: params?.customBlockLabel ?? "",
-    // The dataset's label comes from the result pool, which `init` cannot reach; the UI keeps
-    // it in sync.
-    subtitleLabel: "",
     // Taken as given: an older template's anchor carries `requireEnrichments`, and stripping
     // it without refs to replace it would drop the dependency.
     inputAnchor: params?.inputAnchor,
@@ -468,11 +453,13 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
     // so they stale the block.
     //
     // Custom weights (or the custom nt-mutation centre) count only when the mode is "custom"
-    // AND at least one is actually set. "Custom with no edits" collapses to "default": identical
+    // AND at least one the family scores is set. "Custom with no edits" collapses to "default": identical
     // args (no spurious re-run) and cleaner provenance (unedited custom = the base preset).
     const customWeights =
-      data.weightMode === "custom" ? canonicalWeights(data.customWeights) : undefined;
-    const customCenter = data.weightMode === "custom" ? data.ntMutationsCenter : undefined;
+      data.weightMode === "custom"
+        ? canonicalWeights(data.customWeights, data.presetFamily)
+        : undefined;
+    const customCenter = appliedCenter(data);
     return {
       // As stored, `requireEnrichments` and all. Never added here — only carried, until the
       // sync in ui/src/app.ts has the refs to replace it with.
@@ -493,9 +480,11 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
         data.tierMode === "custom" && data.tier !== undefined
           ? canonicalTier(data.presetFamily, data.tier)
           : undefined,
-      weightMode: customWeights || customCenter !== undefined ? "custom" : "default",
+      weightMode: appliedWeightMode(data),
       customWeights,
       ntMutationsCenter: customCenter ?? NT_MUTATIONS_CENTER,
+      customBlockLabel: data.customBlockLabel?.trim() || undefined,
+      defaultLabels: scoreLabels(data.presetFamily, appliedWeightMode(data)),
       // Ship the calibrated coefficients for the chosen family; the workflow picks the
       // tier row once it knows which signals the input actually carries.
       coefficients: PRESET_COEFFICIENTS[data.presetFamily],
@@ -521,10 +510,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
   // Inverse of the kind's init-params contract: the dataset, the subtitle and
   // the whole scoring recipe -- the fields a user sets by hand. Unlike `args`
   // above, the tier and weights are projected as stored rather than resolved:
-  // this is the user's configuration, not the run's. `subtitleLabel` is the
-  // dataset's label as the source project's result pool shows it, and the
-  // table / plot states are view state; neither is configuration a template
-  // carries.
+  // this is the user's configuration, not the run's. The table / plot states
+  // are view state, not configuration a template carries.
   .templateParams((data) => ({
     inputAnchor: data.inputAnchor,
     filterRef: data.filterRef,
@@ -676,8 +663,8 @@ export const platforma = BlockModelV3.create({ dataModel, kind })
 
   .title(() => "Repertoire Score")
 
-  // Block label in the left panel: the user's custom label, else the dataset and pinned tier.
-  .subtitle((ctx) => ctx.data.customBlockLabel || defaultSubtitle(ctx.data))
+  // Block label in the left panel: the user's custom label, else the score's default label.
+  .subtitle((ctx) => ctx.data.customBlockLabel?.trim() || defaultSubtitle(ctx.data))
 
   .sections(() => [
     { type: "link" as const, href: "/" as const, label: "Main" },

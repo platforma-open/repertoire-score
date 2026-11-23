@@ -2,6 +2,7 @@ import type {
   FeatureKey,
   PresetFamily,
   SelectableTier,
+  WeightMode,
 } from "@platforma-open/milaboratories.repertoire-score.kind";
 import type { RunTier, SignalKind } from "./types";
 
@@ -67,6 +68,63 @@ export function defaultFeatureWeights(
   tier: RunTier,
 ): Partial<Record<FeatureKey, number>> {
   return PRESET_COEFFICIENTS[family][tier] ?? {};
+}
+
+/** The features a family's presets score at any tier. */
+function familyFeatures(family: PresetFamily): Set<FeatureKey> {
+  const used = new Set<FeatureKey>();
+  for (const row of Object.values(PRESET_COEFFICIENTS[family])) {
+    for (const f of Object.keys(row) as FeatureKey[]) used.add(f);
+  }
+  return used;
+}
+
+/**
+ * The custom weights the family scores, with sorted keys so the args stale-gate keys on meaning,
+ * not order. Weights saved for features the family doesn't score (e.g. kept from the other
+ * family) are left out.
+ */
+export function canonicalWeights(
+  w: Partial<Record<FeatureKey, number>> | undefined,
+  family: PresetFamily,
+): Partial<Record<FeatureKey, number>> | undefined {
+  if (!w) return undefined;
+  const scored = familyFeatures(family);
+  const out: Partial<Record<FeatureKey, number>> = {};
+  for (const k of (Object.keys(w) as FeatureKey[]).sort()) {
+    // Its weight is fixed at the preset's; only its centre is editable.
+    if (k === "ntMutationsDistance" || !scored.has(k)) continue;
+    const v = w[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+type WeightData = {
+  presetFamily: PresetFamily;
+  weightMode: WeightMode;
+  customWeights?: Partial<Record<FeatureKey, number>>;
+  ntMutationsCenter?: number;
+};
+
+/** The custom centre k of |nt mutations − k|, when Custom is on and the family scores it. */
+export function appliedCenter(data: WeightData): number | undefined {
+  if (data.weightMode !== "custom") return undefined;
+  return familyFeatures(data.presetFamily).has("ntMutationsDistance")
+    ? data.ntMutationsCenter
+    : undefined;
+}
+
+/**
+ * The weight mode the run uses: "custom" only when a custom weight or centre the family scores is
+ * set, so Custom with no edits that apply runs as Default.
+ */
+export function appliedWeightMode(data: WeightData): WeightMode {
+  if (data.weightMode !== "custom") return "default";
+  return canonicalWeights(data.customWeights, data.presetFamily) ||
+    appliedCenter(data) !== undefined
+    ? "custom"
+    : "default";
 }
 
 /** The signals a family's presets score at any tier. */
