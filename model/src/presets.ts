@@ -79,10 +79,17 @@ function familyFeatures(family: PresetFamily): Set<FeatureKey> {
   return used;
 }
 
+/** Whether `v` is the family's preset weight for `feature` in every tier that scores it. */
+function isPresetWeight(family: PresetFamily, feature: FeatureKey, v: number): boolean {
+  return Object.values(PRESET_COEFFICIENTS[family]).every(
+    (row) => row[feature] === undefined || row[feature] === v,
+  );
+}
+
 /**
- * The custom weights the family scores, with sorted keys so the args stale-gate keys on meaning,
- * not order. Weights saved for features the family doesn't score (e.g. kept from the other
- * family) are left out.
+ * The custom weights that change the family's preset, with sorted keys so the args stale-gate
+ * keys on meaning, not order. Weights for features the family doesn't score (e.g. kept from the
+ * other family) and weights equal to the preset's are left out.
  */
 export function canonicalWeights(
   w: Partial<Record<FeatureKey, number>> | undefined,
@@ -95,7 +102,7 @@ export function canonicalWeights(
     // Its weight is fixed at the preset's; only its centre is editable.
     if (k === "ntMutationsDistance" || !scored.has(k)) continue;
     const v = w[k];
-    if (v !== undefined) out[k] = v;
+    if (v !== undefined && !isPresetWeight(family, k, v)) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -107,17 +114,21 @@ type WeightData = {
   ntMutationsCenter?: number;
 };
 
-/** The custom centre k of |nt mutations − k|, when Custom is on and the family scores it. */
+/**
+ * The custom centre k of |nt mutations − k|, when Custom is on, the family scores the term and k
+ * is not the preset's.
+ */
 export function appliedCenter(data: WeightData): number | undefined {
   if (data.weightMode !== "custom") return undefined;
-  return familyFeatures(data.presetFamily).has("ntMutationsDistance")
-    ? data.ntMutationsCenter
+  const k = data.ntMutationsCenter;
+  return familyFeatures(data.presetFamily).has("ntMutationsDistance") && k !== NT_MUTATIONS_CENTER
+    ? k
     : undefined;
 }
 
 /**
- * The weight mode the run uses: "custom" only when a custom weight or centre the family scores is
- * set, so Custom with no edits that apply runs as Default.
+ * The weight mode the run uses: "custom" only when a custom weight or centre changes the family's
+ * preset, so Custom with no such edit runs as Default.
  */
 export function appliedWeightMode(data: WeightData): WeightMode {
   if (data.weightMode !== "custom") return "default";

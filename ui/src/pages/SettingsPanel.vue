@@ -219,6 +219,14 @@ function resetWeights() {
   app.model.data.ntMutationsCenter = undefined;
 }
 
+// Edits belong to the family they were made under: a feature both families score has a different
+// preset weight in each (CDR mutations −0.25 vs +0.25), so a family change starts from its preset.
+function setFamily(family: PresetFamily | undefined) {
+  if (family === undefined || family === app.model.data.presetFamily) return;
+  app.model.data.presetFamily = family;
+  resetWeights();
+}
+
 // Whether the weights are being edited (vs. using the calibrated preset defaults).
 const isCustomWeights = computed(() => app.model.data.weightMode === "custom");
 
@@ -290,7 +298,12 @@ function onCenterInput(event: Event) {
     <template #tooltip> MiXCR clonotyping output to score. </template>
   </PlDatasetSelector>
 
-  <PlDropdown v-model="app.model.data.presetFamily" :options="familyOptions" label="Preset family">
+  <PlDropdown
+    :model-value="app.model.data.presetFamily"
+    :options="familyOptions"
+    label="Preset family"
+    @update:model-value="setFamily"
+  >
     <template #tooltip>
       Describes how the sample was prepared — this selects the scoring recipe.<br />
       <b>Standard</b> — an immunised repertoire with no antigen-binding pre-sort.<br />
